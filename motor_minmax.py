@@ -22,7 +22,7 @@ import pandas as pd
 # --------------------------------------------------------------------------
 @dataclass
 class Params:
-    dias_ventana_consumo: int = 5        # CONSUMO DIA = CONSUMOS ACU / 5
+    dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
     umbral_pronostico_12d: float = 6.0   # se conserva la fila si SUMA 12 días <= 6
     umbral_unicos: int = 5               # se conserva si UNICOS <= 5 (valores que aparecen 1 sola vez)
     # --- criterios de la hoja REVISAR ---
@@ -240,7 +240,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
             df[dst] = pd.array([pd.NA] * len(df), dtype="Int64")
 
     # 4) Consumo diario --------------------------------------------------------
-    R = df["CONSUMOS ACU"].astype(float) / p.dias_ventana_consumo
+    R = df["CONSUMOS ACU"].astype(float) / p.dias_transcurridos
     df["CONSUMO DIA"] = R
 
     # 5) MIN -------------------------------------------------------------------
@@ -434,10 +434,11 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
 
     leyenda = pd.DataFrame({
         "Concepto": [
-            "Filas que se conservan", "FREC EFECTIVA", "Diagnóstico del pronóstico",
+            "CONSUMO DIA", "Filas que se conservan", "FREC EFECTIVA", "Diagnóstico del pronóstico",
             "Regla C (mayoría)", "Regla A", "Regla B", "Max",
             "SUBEMPAQUE", "Hoja SUGERIR SUBEMPAQUE", "Hoja REVISAR"],
         "Descripción": [
+            "CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / días del mes transcurridos (parámetro)",
             "SUMA pronóstico 12 días <= umbral  O  UNICOS <= 5 (valores que aparecen 1 sola vez)",
             "Mayor intervalo (días) entre dos despachos según LUNES..DOMINGO; nunca menor que FREC ENTRE DESP del BI. Se usa en reglas A y B",
             "PRON PROM DIA = SUMA/12 (<1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; SUMA < EXHI = pronóstico no alcanza la exhibición",
