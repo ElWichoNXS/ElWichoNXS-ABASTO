@@ -23,25 +23,27 @@ import pandas as pd
 @dataclass
 class Params:
     dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
-    umbral_pronostico_12d: float = 6.0   # se conserva la fila si SUMA 12 días <= 6
-    umbral_unicos: int = 5               # se conserva si UNICOS <= 5 (valores que aparecen 1 sola vez)
-    # --- criterios de la hoja REVISAR ---
-    revisar_ratio_consumo: float = 5.0   # consumo real 12d vs pronóstico 12d (x veces)
+    # --- Qué filas pasan de TDF a Min/Max ---
+    pct_empaque_min_max: float = 0.5     # pasa a Min/Max si (pronóstico promedio diario x FREC) < 50 % de Empq_final
+    umbral_unicos: int = 5               # pasa a Min/Max si UNICOS <= 5 (pronóstico con valores repetidos = poco confiable)
+    # --- Cálculo del Min ---
+    umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura (regla B)
+    usar_frec_efectiva: bool = False     # False: FREC del BI (promedio). True: MAYOR intervalo real entre despachos
+    # --- Cálculo del Max ---
+    dias_cobertura_max: float = 0.0      # 0 = desactivado (Max = Min + SUBEMPAQUE o EMPAQUE/2)
+    # --- Diagnóstico del pronóstico ---
+    umbral_venta_prom_dia: float = 1.0   # pronóstico promedio < 1 unid/día = "insuficiente"
+    # --- Hoja REVISAR ---
     revisar_dgmax_dias: float = 60.0     # cobertura Max > 60 días de consumo
-    revisar_var_bi: float = 0.5          # Min nuevo vs Min vigente del BI: cambio > 50 %
-    umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura
-    max_dias_ss_ajuste: int = 4          # el ajuste fino aplica si Dias SS <= 4
     # --- Sugerencias de subempaque (el Max usa SIEMPRE el SUBEMPAQUE real del BI) ---
     min_empaque_sugerir_sub: int = 6     # solo se sugiere subempacar si EMPAQUE >= 6
     min_locales_con_sub: int = 1         # el SKU debe estar subempacado en >= N locales del BI
-    familias_alto_valor: tuple = ("VINOS", "ESPUMANTE", "WHISKY", "DESTILADAS", "COCTELES")  # prioridad ALTA
+    pvp_alto: float = 5.0                # criterio 1: PVP >= 5 (aprox. 10 % de productos más caros)
+    sub_consumo_bajo_dia: float = 1.0    # criterio 2: consumo diario < 1 unidad/día = bajo consumo
+    sub_pct_exhi_max: float = 0.5        # criterio 3: Exhi / EMPAQUE < 50 %
+    familias_no_subempacar: tuple = ("CERVEZAS", "CERVEZAS SIN ALCOHOL", "AGUAS")  # nunca se subempacan
+    skus_no_subempacar: tuple = ()       # ESTADISTICOS específicos que nunca se subempacan
     skus_sub_extra: tuple = ()           # SKUs que sabes subempacables aunque el BI no los muestre subempacados
-    # --- NUEVO (punto 1): cobertura por días reales de despacho ---
-    usar_frec_efectiva: bool = False     # (validado: el proceso manual usa la FREC del BI) usa el MAYOR intervalo entre despachos (no el promedio del BI)
-    # --- NUEVO (punto 2): validación del pronóstico ---
-    umbral_venta_prom_dia: float = 1.0   # pronóstico promedio < 1 unid/día = "insuficiente"
-    # --- NUEVO (punto 6): Max por cobertura sobre el incremento mínimo de despacho ---
-    dias_cobertura_max: float = 0.0      # 0 = desactivado (Max = Min + SUBEMPAQUE o EMPAQUE/2)
 
 
 # --------------------------------------------------------------------------
@@ -183,6 +185,17 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     n_in = len(df)
     ev = _evidencia_subempaque(df)          # evidencia de subempaque en TODO el BI (antes de filtrar)
 
+    # Entradas numéricas limpias (cada Local x ESTADISTICO conserva su propia Exhi)
+    for c in ("Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "FREC ENTRE DESP", "Dias SS"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    if "Empq_final" in df.columns:
+        df["Empq_final"] = pd.to_numeric(df["Empq_final"], errors="coerce")
+    else:
+        df["Empq_final"] = np.nan
+    df["Empq_final"] = df["Empq_final"].where(df["Empq_final"] > 0,
+                                              np.where(df["SUBEMPAQUE"] > 0, df["SUBEMPAQUE"], df["EMPAQUE"]))
+    df["FREC EFECTIVA"] = frec_efectiva(df, p)
+
     # 1) SUMA 12 días y UNICOS (= SUMA(--(CONTAR.SI(rango;rango)=1)) de Excel) ----
     suma = np.nansum(V, axis=1)
     igual = (V[:, :, None] == V[:, None, :]).sum(axis=2)     # NaN nunca es igual
@@ -191,11 +204,32 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     df["UNICOS"] = unicos
     sin_pron = np.all(np.isnan(V), axis=1)
 
-    cond_bajo = suma <= p.umbral_pronostico_12d
-    cond_uni = unicos <= p.umbral_unicos
-    df = df[cond_bajo | cond_uni].copy().reset_index(drop=True)
-    V = V[(cond_bajo | cond_uni)]
-    sin_pron = sin_pron[(cond_bajo | cond_uni)]
+    # Filtro TDF -> Min/Max: pronóstico promedio diario x frecuencia < X % del empaque final
+    pron_prom = suma / 12
+    #   a) pronóstico cero / sin pronóstico (SUMA = 0)
+    #   b) pronóstico bajo: pronóstico promedio diario x FREC < X % de Empq_final
+    #   c) pronóstico repetido: UNICOS <= umbral (el forecast copia los mismos valores = poco confiable)
+    # Pasa a Min/Max si cumple CUALQUIERA; si no cumple ninguna, se queda en TDF.
+    cero = suma == 0
+    bajo = (pron_prom * df["FREC EFECTIVA"].values) < p.pct_empaque_min_max * df["Empq_final"].values
+    repet = unicos <= p.umbral_unicos
+    cond_mm = bajo | repet | cero
+    seg = {                                   # segmentos mutuamente excluyentes (suman el total del BI)
+        "1_pasa_pronostico_cero": int(cero.sum()),
+        "2_pasa_pronostico_bajo": int((bajo & ~repet & ~cero).sum()),
+        "3_pasa_pronostico_bajo_y_repetido": int((bajo & repet & ~cero).sum()),
+        "4_pasa_solo_pronostico_repetido": int((repet & ~bajo & ~cero).sum()),
+        "5_queda_en_TDF": int((~cond_mm).sum()),
+        "total_BI": n_in,
+    }
+    motivo = np.where(cero, "Pronóstico cero",
+              np.where(bajo & repet, "Pronóstico bajo + repetido",
+              np.where(bajo, "Pronóstico bajo",
+              np.where(repet, "Pronóstico repetido", ""))))
+    df["MOTIVO MIN/MAX"] = motivo
+    df = df[cond_mm].copy().reset_index(drop=True)
+    V = V[cond_mm]
+    sin_pron = sin_pron[cond_mm]
     df["_sin_pronostico"] = sin_pron
 
     # 2) APTO (equivale al XLOOKUP del archivo externo) -----------------------
@@ -208,16 +242,13 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         df["APTO"] = "Si"
         sin_apto = len(df)
 
-    # Entradas numéricas limpias (cada Local x ESTADISTICO conserva su propia Exhi)
-    for c in ("Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "FREC ENTRE DESP", "Dias SS"):
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    # 2b) Frecuencia efectiva (punto 1) y diagnóstico del pronóstico (punto 2) -----
-    df["FREC EFECTIVA"] = frec_efectiva(df, p)
+    # 2b) Diagnóstico del pronóstico ---------------------------------------------
     cum = np.nancumsum(V, axis=1)
     idx = np.clip(df["FREC EFECTIVA"].values, 1, 12) - 1
     df["PRON CICLO"] = np.round(cum[np.arange(len(df)), idx], 2)      # venta pronosticada hasta el próximo despacho
     df["PRON PROM DIA"] = np.round(df["SUMA"] / 12, 2)
+    df["PRON x FREC"] = np.round(df["SUMA"] / 12 * df["FREC EFECTIVA"], 2)
+    df["% PRON/EMPQ"] = df["PRON x FREC"] / df["Empq_final"]
     insuf = df["PRON PROM DIA"] < p.umbral_venta_prom_dia
     rep = df["UNICOS"] <= p.umbral_unicos
     df["DIAG PRONOSTICO"] = np.select(
@@ -232,16 +263,10 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     df = df.merge(ev, on="ESTADISTICO", how="left")
     df["SUBEMPAQUE"] = pd.to_numeric(df["SUBEMPAQUE"], errors="coerce").fillna(0)
 
-    # Min/Max vigentes del BI: float por los vacíos -> entero anulable (Int64)
-    for src, dst in (("Min", "Min BI vigente"), ("Max", "Max BI vigente")):
-        if src in df:
-            df[dst] = pd.to_numeric(df[src], errors="coerce").round(0).astype("Int64")
-        else:
-            df[dst] = pd.array([pd.NA] * len(df), dtype="Int64")
-
     # 4) Consumo diario --------------------------------------------------------
     R = df["CONSUMOS ACU"].astype(float) / p.dias_transcurridos
     df["CONSUMO DIA"] = R
+    df["% CONSUMO/EMPQ"] = R * df["FREC EFECTIVA"] / df["Empq_final"]
 
     # 5) MIN -------------------------------------------------------------------
     E = df["Exhi"].astype(float)
@@ -250,7 +275,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
 
     caso_a = R > E                                             # consumo > exhibición
     caso_b = (~caso_a) & (R * F > E) & (df["APTO"] == "Si") & \
-             (ds_exhi < p.umbral_dg_exhi) & (df["Dias SS"] <= p.max_dias_ss_ajuste)
+             (ds_exhi < p.umbral_dg_exhi)
 
     min_ = np.where(caso_a, xround(R * F, 0),
             np.where(caso_b, xround(R * F, 0), E))
@@ -281,8 +306,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     resumen = {
         "filas_bi": n_in,
         "filas_resultado": len(df),
-        "por_pronostico_bajo": int(cond_bajo.sum()),
-        "por_unicos": int((cond_uni & ~cond_bajo).sum()),
+        **{f"segmento_{k}": v for k, v in seg.items()},
         "regla_A": int(caso_a.sum()),
         "regla_B": int(caso_b.sum()),
         "regla_C": int((~caso_a & ~caso_b).sum()),
@@ -294,6 +318,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         "pronostico_ciclo_mayor_exhi": int((df["PRON CICLO"] > df["Exhi"]).sum()),
         "max_por_cobertura": int((df["_regla_max"] == "Cobertura (R x días objetivo)").sum()),
         "max_min_empaque_mitad": int((df["_regla_max"] == "Min + EMPAQUE/2").sum()),
+        "pronostico_cero_o_sin_pronostico": int((df["SUMA"] == 0).sum()),
         "posible_truncado_bi": n_in >= 29999,
     }
 
@@ -308,7 +333,8 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         cols.append(c)
         if c == "Físico":
             cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
-                     "FREC EFECTIVA", "PRON PROM DIA", "PRON CICLO", "DIAG PRONOSTICO", "SUMA < EXHI"]
+                     "FREC EFECTIVA", "PRON PROM DIA", "PRON x FREC", "% PRON/EMPQ", "% CONSUMO/EMPQ",
+                     "PRON CICLO", "DIAG PRONOSTICO", "SUMA < EXHI", "MOTIVO MIN/MAX"]
         if c == "Exhi":
             cols += ["CON>EXHI", "DG EXHIBICION", "DG EXHI = DG MIN"]
     resto = [c for c in df.columns if c not in cols]
@@ -324,8 +350,13 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     p = p or Params()
     R = df["CONSUMO DIA"]
     F = df["FREC EFECTIVA"] if "FREC EFECTIVA" in df else df["FREC ENTRE DESP"]
-    cons12 = R * 12
+    cons_pct = df["% CONSUMO/EMPQ"]
+    # El forecast manda el producto a Min/Max, pero el CONSUMO REAL por sí solo no lo mandaría
+    cons_alto = cons_pct >= p.pct_empaque_min_max
+    cons_alto_critico = cons_alto & ((df["SUMA"] == 0) | (cons_pct >= 1))
     reglas = [
+        ("Prioridad ALTA", "Pronóstico cero o consumo real >= 1 empaque por ciclo: el forecast lo envía a Min/Max pero el consumo real es alto",
+         cons_alto_critico),
         ("Prioridad ALTA", "Consumo diario > Exhibición (regla A)",
          df["_regla_min"].str.startswith("A")),
         ("Prioridad ALTA", "Sin pronóstico en los 12 días",
@@ -340,14 +371,8 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
          (df["PRON CICLO"] > df["Exhi"]) & ~df["_regla_min"].str.startswith("A")),
         ("Prioridad MEDIA", "Pronóstico con valores repetidos y consumo real > pronóstico (revisar calidad del pronóstico)",
          df["DIAG PRONOSTICO"].isin(["Valores repetidos", "Repetido e insuficiente"]) & (R > df["PRON PROM DIA"] * 2) & (R >= 1)),
-        ("Prioridad MEDIA", f"Consumo real 12d > {p.revisar_ratio_consumo:g}x el pronóstico",
-         (cons12 > p.revisar_ratio_consumo * df["SUMA"]) & (cons12 > 12)),
         ("Prioridad MEDIA", f"Cobertura del Max > {p.revisar_dgmax_dias:g} días de consumo",
          df["DGMAX"] > p.revisar_dgmax_dias),
-        ("Prioridad MEDIA", f"Min nuevo difiere > {p.revisar_var_bi:.0%} del Min vigente en BI",
-         df["Min BI vigente"].notna() &
-         ((df["Min"] - df["Min BI vigente"].astype(float)).abs() >
-          p.revisar_var_bi * df["Min BI vigente"].astype(float).abs())),
     ]
     motivos = pd.Series("", index=df.index, dtype=object)
     prio = pd.Series("", index=df.index, dtype=object)
@@ -365,11 +390,11 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     rev.insert(2, "N° MOTIVOS", n[n > 0])
     rev = rev.sort_values(["PRIORIDAD", "N° MOTIVOS"], ascending=[True, False])
     cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
-            "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "EMPAQUE", "SUBEMPAQUE",
-            "Dias SS", "FREC ENTRE DESP", "FREC EFECTIVA", "CONSUMOS ACU", "CONSUMO DIA", "Exhi",
-            "Físico", "INV NETO", "FISICO_WH", "SUMA", "UNICOS", "PRON PROM DIA", "PRON CICLO",
-            "DIAG PRONOSTICO", "_regla_max", "Min BI vigente", "Max BI vigente", "Min", "Max",
-            "DG MIN", "DGMAX", "_regla_min"]
+            "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "EMPAQUE", "SUBEMPAQUE", "Empq_final",
+            "FREC ENTRE DESP", "FREC EFECTIVA", "CONSUMOS ACU", "CONSUMO DIA", "Exhi",
+            "MOTIVO MIN/MAX", "Físico", "INV NETO", "FISICO_WH", "SUMA", "UNICOS", "PRON PROM DIA", "PRON x FREC",
+            "% PRON/EMPQ", "% CONSUMO/EMPQ", "PRON CICLO", "DIAG PRONOSTICO", "_regla_max",
+            "Min", "Max", "DG MIN", "DGMAX", "_regla_min"]
     return rev[[c for c in cols if c in rev.columns]].reset_index(drop=True)
 
 
@@ -377,8 +402,11 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
 # HOJA "SUGERIR SUBEMPAQUE"
 # --------------------------------------------------------------------------
 def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
-    """Productos SIN subempaque en un local que conviene subempacar, siempre que el mismo
-    SKU ya esté subempacado en otros locales del BI (o figure en `skus_sub_extra`).
+    """Productos SIN subempaque en un local que conviene subempacar.
+    Reglas:
+      1. Nunca: familias excluidas (CERVEZAS, CERVEZAS SIN ALCOHOL, AGUAS) ni ESTADISTICOS excluidos.
+      2. Solo si cumple al menos UNO de: PVP alto, bajo consumo, o Exhi/EMPAQUE < 50 %.
+      3. El mismo SKU debe estar ya subempacado en otros locales del BI (o figurar en `skus_sub_extra`).
     Es una propuesta de cambio de maestro: el Max de la hoja principal NO la aplica."""
     p = p or Params()
     emp = df["EMPAQUE"].astype(float)
@@ -389,29 +417,40 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
     sub_sug = pd.Series(np.where(evid_bi, df["_SUB_REF"], np.where(extra, 1, np.nan)), index=df.index)
     sub_sug = np.minimum(sub_sug, emp)
 
-    alto = df["FAMILIA"].isin(p.familias_alto_valor)
-    incr_mayor_exhi = inc_act > df["Exhi"]
+    prohibido = (df["FAMILIA"].astype(str).str.strip().str.upper().isin([f.upper() for f in p.familias_no_subempacar])
+                 | df["ESTADISTICO"].isin(p.skus_no_subempacar))
+    pvp = pd.to_numeric(df["PVP"], errors="coerce")
+    c_pvp = pvp >= p.pvp_alto
+    c_cons = df["CONSUMO DIA"] < p.sub_consumo_bajo_dia
+    pct_exhi = df["Exhi"] / emp.replace(0, np.nan)
+    c_exhi = pct_exhi < p.sub_pct_exhi_max
+
     cand = ((df["SUBEMPAQUE"] == 0) & (emp >= p.min_empaque_sugerir_sub) & (evid_bi | extra) &
-            (sub_sug > 0) & (sub_sug < inc_act) & (alto | incr_mayor_exhi))
+            (sub_sug > 0) & (sub_sug < inc_act) & ~prohibido & (c_pvp | c_cons | c_exhi))
     s = df[cand].copy()
     if s.empty:
         return pd.DataFrame()
     s["SUB SUGERIDO"] = sub_sug[cand].astype(int)
+    s["% EXHI/EMPAQUE"] = pct_exhi[cand]
     mx_sub, _ = _calc_max(s["Min"], s["CONSUMO DIA"], s["EMPAQUE"], s["SUB SUGERIDO"], p)
     s["MAX CON SUB"] = mx_sub
     s["REDUCCION MAX"] = s["Max"] - s["MAX CON SUB"]
-    s["REDUCCION VALOR"] = (s["REDUCCION MAX"] * pd.to_numeric(s["PVP"], errors="coerce")).round(2)
+    s["REDUCCION VALOR"] = (s["REDUCCION MAX"] * pvp[cand]).round(2)
     s["EVIDENCIA"] = np.where(s["_N_LOC_SUB"].fillna(0) >= p.min_locales_con_sub,
                               "Subempacado en " + s["_N_LOC_SUB"].fillna(0).astype(int).astype(str)
                               + " de " + s["_N_LOC_SKU"].fillna(0).astype(int).astype(str) + " locales",
                               "SKU de la lista manual")
     s["VALORES EN OTROS LOCALES"] = s["_SUB_VALORES"].fillna("")
-    s["MOTIVO"] = np.where(alto[cand], "Familia de alto valor", "Incremento EMPAQUE/2 mayor que la Exhi")
-    s["PRIORIDAD"] = np.where(alto[cand], "Prioridad ALTA", "Prioridad MEDIA")
+    n_crit = c_pvp[cand].astype(int) + c_cons[cand].astype(int) + c_exhi[cand].astype(int)
+    partes = pd.DataFrame({"PVP alto": c_pvp[cand], "Bajo consumo": c_cons[cand],
+                           f"Exhi < {p.sub_pct_exhi_max:.0%} del empaque": c_exhi[cand]})
+    s["MOTIVO"] = partes.apply(lambda r: " + ".join(k for k, v in r.items() if v), axis=1)
+    s["PRIORIDAD"] = np.where(n_crit >= 2, "Prioridad ALTA", "Prioridad MEDIA")
     s = s.rename(columns={"SUBEMPAQUE": "SUB ACTUAL", "Max": "MAX ACTUAL"})
     cols = ["PRIORIDAD", "MOTIVO", "CD", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA",
             "EMPAQUE", "SUB ACTUAL", "SUB SUGERIDO", "EVIDENCIA", "VALORES EN OTROS LOCALES", "Exhi",
-            "CONSUMO DIA", "Min", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX", "PVP", "REDUCCION VALOR"]
+            "% EXHI/EMPAQUE", "CONSUMO DIA", "Min", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX", "PVP",
+            "REDUCCION VALOR"]
     s = s[[c for c in cols if c in s.columns]]
     return s.sort_values(["PRIORIDAD", "REDUCCION VALOR"], ascending=[True, False]).reset_index(drop=True)
 
@@ -427,28 +466,32 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
 
     sug = sug if sug is not None else pd.DataFrame()
     privadas = [c for c in df.columns if isinstance(c, str) and c.startswith("_")]
-    privadas += ["Min BI vigente", "Max BI vigente"]
     res = df.drop(columns=[c for c in privadas if c in df.columns])
     res.columns = [c.strftime("%Y-%m-%d") if isinstance(c, (dt.datetime, pd.Timestamp)) else c
                    for c in res.columns]
 
     leyenda = pd.DataFrame({
         "Concepto": [
-            "CONSUMO DIA", "Filas que se conservan", "FREC EFECTIVA", "Diagnóstico del pronóstico",
-            "Regla C (mayoría)", "Regla A", "Regla B", "Max",
-            "SUBEMPAQUE", "Hoja SUGERIR SUBEMPAQUE", "Hoja REVISAR"],
+            "Contexto", "Qué filas aparecen aquí", "CONSUMO DIA", "FREC EFECTIVA",
+            "Regla A del Min", "Regla B del Min", "Regla C del Min (mayoría)", "Max", "SUBEMPAQUE",
+            "Hoja REVISAR", "Hoja SUGERIR SUBEMPAQUE", "Diagnóstico del pronóstico"],
         "Descripción": [
+            "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de este archivo son las que conviene pasar a método Min/Max, "
+            "donde se usan los Min y Max configurados por local y estadístico en lugar del forecast",
+            "Pasa a Min/Max el producto cuyo pronóstico NO es confiable para abastecer por forecast: (a) pronóstico cero o sin pronóstico, "
+            "(b) pronóstico bajo: promedio diario x FREC < 50 % de Empq_final, o (c) pronóstico repetido: UNICOS <= 5. "
+            "La columna MOTIVO MIN/MAX indica cuál aplicó. Los que no cumplen ninguna se quedan en TDF y no aparecen aquí",
             "CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / días del mes transcurridos (parámetro)",
-            "SUMA pronóstico 12 días <= umbral  O  UNICOS <= 5 (valores que aparecen 1 sola vez)",
-            "Mayor intervalo (días) entre dos despachos según LUNES..DOMINGO; nunca menor que FREC ENTRE DESP del BI. Se usa en reglas A y B",
-            "PRON PROM DIA = SUMA/12 (<1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; SUMA < EXHI = pronóstico no alcanza la exhibición",
+            "Días entre despachos. Por defecto es FREC ENTRE DESP del BI; opcionalmente el mayor intervalo real según LUNES..DOMINGO",
+            "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)",
+            "Si APTO=Si, Exhi/CONSUMO DIA < 2 días y consumo x FREC > Exhi: Min = ROUND(consumo x FREC; 0)",
             "Min = Exhi",
-            "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC ENTRE DESP; 0)",
-            "Si APTO=Si, Exhi/CONSUMO DIA < 2 días, Dias SS <= 4 y consumo x FREC > Exhi: Min = ROUND(consumo x FREC; 0)",
             "SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE; si no: Max = Min + ROUND(EMPAQUE/2; 0) (con ROQ < EMPAQUE/2 el sistema no despacha). Opcional: cobertura de N días en múltiplos de ese incremento",
             "Se respeta el SUBEMPAQUE del BI (el real del sistema); el Max nunca asume un subempaque que no existe",
-            "Productos sin subempaque cuyo mismo SKU ya está subempacado en otros locales y donde conviene (familia de alto valor, o EMPAQUE/2 > Exhi). Es una propuesta de cambio de maestro; muestra el Max resultante",
-            "Casos fuera de parámetros o complejos; revisar de arriba hacia abajo (ALTA primero)"],
+            "Casos fuera de parámetros o complejos; revisar de arriba hacia abajo (ALTA primero). Incluye los de pronóstico bajo/cero con consumo real alto",
+            "Productos sin subempaque que cumplen PVP alto, bajo consumo o Exhi/EMPAQUE < 50 %, cuyo mismo SKU ya está subempacado en otros locales. "
+            "Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. Es una propuesta de cambio de maestro; muestra el Max resultante",
+            "PRON PROM DIA = SUMA/12 (<1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; SUMA < EXHI = pronóstico no alcanza la exhibición"],
     })
     rs = pd.DataFrame(list(resumen.items()), columns=["Indicador", "Valor"])
 
@@ -476,15 +519,16 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                     ancho = 42
                 ws.column_dimensions[get_column_letter(i)].width = ancho
         # formato numérico: enteros sin decimales, coberturas con 1 decimal
-        ent = {"Min", "Max", "Min BI vigente", "Max BI vigente", "DIF", "Exhi", "EMPAQUE",
+        ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE",
                "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA", "FREC ENTRE DESP", "Físico",
                "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
-        dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON CICLO",
+        pct = {"% PRON/EMPQ", "% CONSUMO/EMPQ", "% EXHI/EMPAQUE"}
+        dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON x FREC", "PRON CICLO",
                "PVP", "REDUCCION VALOR"}
         for nombre, d in hojas:
             ws_ = w.sheets[nombre]
             for i, col in enumerate(d.columns, 1):
-                fmt = "0" if col in ent else ("0.0" if col in dec else None)
+                fmt = "0" if col in ent else ("0.0" if col in dec else ("0%" if col in pct else None))
                 if fmt:
                     for r in range(2, len(d) + 2):
                         ws_.cell(row=r, column=i).number_format = fmt

@@ -29,32 +29,31 @@ with st.sidebar:
                  "Cámbialo cada vez que descargues el BI."),
     )
 
-    st.subheader("2. Qué filas se conservan")
-    p.umbral_pronostico_12d = st.number_input(
-        "Pronóstico de 12 días ≤ (unidades)", 0.0, 100.0, 6.0,
-        help="Se conservan los productos cuyo pronóstico total (suma de los 12 días, columna SUMA) es "
-             "menor o igual a este valor: son productos con muy poca venta esperada ('pronóstico cero').")
+    st.subheader("2. Qué productos pasan de TDF a Min/Max")
+    p.pct_empaque_min_max = st.number_input(
+        "Pronóstico × frecuencia menor a (% del empaque final)", 0.05, 3.0, 0.5, step=0.05, format="%.2f",
+        help="Pasa a Min/Max el producto cuyo (pronóstico promedio diario × FREC del local) sea MENOR a este "
+             "porcentaje del empaque final (Empq_final). 0.50 = 50 %. Si el pronóstico por ciclo de despacho "
+             "no llega ni a media caja, el forecast no justifica abastecer por TDF. Subir este valor "
+             "hace que pasen más productos a Min/Max.")
     p.umbral_unicos = st.number_input(
-        "UNICOS máximo (≤)", 0, 12, 5,
-        help="UNICOS = cuántos de los 12 valores del pronóstico aparecen una sola vez. Un número bajo "
-             "significa que el pronóstico repite los mismos valores (semana 2 copia a semana 1), es decir, "
-             "no es confiable. Se conservan las filas con UNICOS menor o igual a este valor.")
+        "Pronóstico repetido: UNICOS menor o igual a", 0, 12, 5,
+        help="También pasa a Min/Max el producto con pronóstico REPETIDO. UNICOS = cuántos de los 12 valores "
+             "del pronóstico aparecen una sola vez. Un número bajo significa que el forecast repite los "
+             "mismos valores (la semana 2 copia a la semana 1), por lo que no es confiable para abastecer por TDF. "
+             "Con 5, pasan los productos que tienen 5 o menos valores únicos.")
 
     st.subheader("3. Cálculo del Min")
     p.umbral_dg_exhi = st.number_input(
         "Exhibición cubre menos de (días)", 0.5, 10.0, 2.0,
         help="Regla B del Min. Si los días que cubre la exhibición (Exhi ÷ consumo diario) son menos que "
              "este valor, el Min sube a cubrir la frecuencia de despacho.")
-    p.max_dias_ss_ajuste = st.number_input(
-        "Ajuste fino solo si Dias SS ≤", 0, 30, 4,
-        help="Regla B del Min. 'Dias SS' son los días de stock de seguridad del producto. El ajuste fino "
-             "solo se aplica a productos con stock de seguridad igual o menor a este número de días.")
     p.usar_frec_efectiva = st.checkbox(
         "Usar el mayor intervalo real entre despachos", False,
-        help="Apagado (recomendado, es lo que haces manualmente): se usa FREC ENTRE DESP tal como viene del BI "
-             "(promedio de días entre despachos). Encendido: se usa el hueco MÁS LARGO entre despachos "
-             "según los días LUNES…DOMINGO. Ejemplo: despacha Mar-Sáb-Dom; el BI dice 2 días, pero entre "
-             "Mar y Sáb pasan 4.")
+        help="Apagado (recomendado): se usa FREC ENTRE DESP tal como viene del BI (promedio de días entre "
+             "despachos). Encendido: se usa el hueco MÁS LARGO entre despachos según los días "
+             "LUNES…DOMINGO. Ejemplo: despacha Mar-Sáb-Dom; el BI dice 2 días, pero entre Mar y Sáb pasan 4. "
+             "También afecta el filtro de la sección 2.")
 
     st.subheader("4. Cálculo del Max")
     p.dias_cobertura_max = st.number_input(
@@ -70,31 +69,41 @@ with st.sidebar:
              "(SUMA ÷ 12) es menor a este valor, se marca como 'insuficiente'.")
 
     st.subheader("6. Hoja REVISAR")
-    p.revisar_ratio_consumo = st.number_input(
-        "Consumo real mayor que X veces el pronóstico", 1.0, 20.0, 5.0,
-        help="Marca para revisión los productos cuyo consumo real de 12 días supera en X veces "
-             "el pronóstico: el pronóstico probablemente está subestimado.")
     p.revisar_dgmax_dias = st.number_input(
         "Cobertura del Max mayor a (días)", 1.0, 365.0, 60.0,
         help="Marca para revisión los productos donde el Max cubre más de estos días de consumo "
              "(posible sobre-inventario).")
-    p.revisar_var_bi = st.number_input(
-        "Cambio del Min vs Min vigente en BI mayor a", 0.0, 5.0, 0.5, step=0.05, format="%.2f",
-        help="Marca para revisión si el Min nuevo difiere del Min que ya tiene el BI en más de este "
-             "porcentaje. 0.50 = 50 %.")
 
     st.subheader("7. Sugerencias de subempaque")
+    st.caption("Se sugiere subempacar solo si cumple AL MENOS UNO de los tres criterios.")
+    p.pvp_alto = st.number_input(
+        "Criterio 1 · PVP alto: precio de venta ≥", 0.0, 1000.0, 5.0, step=0.5,
+        help="Un producto se considera de PVP alto si su precio de venta al público es mayor o igual a este valor. "
+             "El valor por defecto (5.00) corresponde aproximadamente al 10 % de productos más caros del BI.")
+    p.sub_consumo_bajo_dia = st.number_input(
+        "Criterio 2 · Bajo consumo: consumo diario <", 0.0, 100.0, 1.0, step=0.25,
+        help="Un producto es de bajo consumo si su CONSUMO DIA es menor a este número de unidades por día.")
+    p.sub_pct_exhi_max = st.number_input(
+        "Criterio 3 · Exhibición menor a (% del empaque)", 0.05, 3.0, 0.5, step=0.05, format="%.2f",
+        help="% de exhibición = Exhi ÷ EMPAQUE. Si la exhibición es menor a este porcentaje del empaque "
+             "(0.50 = 50 %), el producto es candidato a subempacar.")
     p.min_empaque_sugerir_sub = st.number_input(
         "Solo si EMPAQUE ≥ (unidades)", 1, 100, 6,
         help="Solo se sugiere subempacar productos cuyo empaque tenga al menos esta cantidad de unidades.")
     p.min_locales_con_sub = st.number_input(
         "El SKU debe estar subempacado en al menos N locales", 1, 50, 1,
         help="Se sugiere subempacar un producto en un local solo si el mismo SKU ya está subempacado "
-             "en al menos N locales del BI (evidencia de que se puede).")
+             "en al menos N locales del BI. Esa evidencia define también el valor de subempaque sugerido.")
     fam = st.text_area(
-        "Familias de prioridad ALTA (una por línea)", "\n".join(p.familias_alto_valor),
-        help="Las sugerencias de estas familias (alto valor) salen como Prioridad ALTA; el resto como MEDIA.")
-    p.familias_alto_valor = tuple(x.strip().upper() for x in fam.splitlines() if x.strip())
+        "Familias que NUNCA se subempacan (una por línea)", "\n".join(p.familias_no_subempacar),
+        help="Productos de estas familias jamás aparecen en las sugerencias de subempaque. "
+             "Por defecto: CERVEZAS, CERVEZAS SIN ALCOHOL y AGUAS.")
+    p.familias_no_subempacar = tuple(x.strip().upper() for x in fam.splitlines() if x.strip())
+    excl = st.text_area(
+        "ESTADISTICOS que NO se deben subempacar (uno por línea)", "",
+        help="Códigos de ESTADISTICO específicos que nunca se subempacan, aunque cumplan los criterios. "
+             "Ejemplo: 243138001. Escribe un código por línea.")
+    p.skus_no_subempacar = tuple(int(x) for x in excl.split() if x.strip().isdigit())
     extra = st.text_area(
         "SKUs subempacables aunque el BI no los muestre subempacados (uno por línea)", "",
         help="Códigos de ESTADISTICO que sabes que se pueden subempacar aunque en ningún local "
@@ -126,7 +135,7 @@ if f_bi:
 
     k = st.columns(5)
     k[0].metric("Filas BI", f"{r['filas_bi']:,}")
-    k[1].metric("Filas resultado", f"{r['filas_resultado']:,}")
+    k[1].metric("Pasan a Min/Max", f"{r['filas_resultado']:,}")
     k[2].metric("Min = Exhi (regla C)", f"{r['regla_C']:,}")
     k[3].metric("Ajustadas (A + B)", f"{r['regla_A'] + r['regla_B']:,}")
     k[4].metric("Para REVISAR", f"{r['filas_con_aviso_revisar']:,}")
@@ -139,16 +148,29 @@ if f_bi:
     st.metric("Casos en hoja REVISAR", f"{len(rev):,}",
               f"{r['revisar_prioridad_alta']} de prioridad alta", delta_color="off")
 
+    st.subheader("Segmentación del BI: qué se queda en TDF y qué pasa a Min/Max")
+    seg = pd.DataFrame({
+        "Segmento": ["Pasa a Min/Max · pronóstico cero o sin pronóstico",
+                     "Pasa a Min/Max · pronóstico bajo",
+                     "Pasa a Min/Max · pronóstico bajo y repetido",
+                     "Pasa a Min/Max · solo pronóstico repetido",
+                     "SE QUEDA EN TDF (ninguna condición)", "Total BI"],
+        "Filas": [r["segmento_1_pasa_pronostico_cero"], r["segmento_2_pasa_pronostico_bajo"],
+                  r["segmento_3_pasa_pronostico_bajo_y_repetido"], r["segmento_4_pasa_solo_pronostico_repetido"],
+                  r["segmento_5_queda_en_TDF"], r["segmento_total_BI"]]})
+    seg["% del BI"] = (seg["Filas"] / r["segmento_total_BI"]).map("{:.1%}".format)
+    st.dataframe(seg, hide_index=True, use_container_width=True)
+
     k2 = st.columns(4)
     k2[0].metric("Frec. efectiva > BI", f"{r['frec_efectiva_mayor_que_bi']:,}")
     k2[1].metric("Pronóstico insuficiente", f"{r['pronostico_insuficiente']:,}")
     k2[2].metric("Pronóstico repetido", f"{r['pronostico_valores_repetidos']:,}")
     k2[3].metric("Pronóstico ciclo > Exhi", f"{r['pronostico_ciclo_mayor_exhi']:,}")
 
-    t1, t2, t3 = st.tabs(["Resultado", "Casos a revisar", "Sugerir subempaque"])
+    t1, t2, t3 = st.tabs(["Resultado (pasan a Min/Max)", "Casos a revisar", "Sugerir subempaque"])
     t1.dataframe(salida.head(500), use_container_width=True)
     t2.dataframe(rev, use_container_width=True)
-    t3.caption("Productos sin subempaque cuyo mismo SKU ya está subempacado en otros locales. "
+    t3.caption("Productos sin subempaque con PVP alto, bajo consumo o exhibición < 50 % del empaque, cuyo mismo SKU ya está subempacado en otros locales. "
                "Es una propuesta de cambio de maestro: el Max de la hoja principal usa el SUBEMPAQUE actual del BI.")
     t3.dataframe(sug, use_container_width=True)
 
@@ -164,16 +186,46 @@ if f_bi:
 # ======================================================================
 st.divider()
 st.header("📘 Reglas que usa el programa para calcular el Min y el Max")
-st.caption("Los valores entre paréntesis son los parámetros que tienes configurados en este momento.")
+st.caption("Los valores resaltados son los parámetros que tienes configurados en este momento.")
 
-with st.expander("Paso 0 · Qué filas se procesan y cómo se obtiene el consumo diario", expanded=True):
+with st.expander("Contexto · TDF vs Min/Max", expanded=True):
+    st.markdown("""
+Toda la data del BI está en método **TDF (TIA Demand Forecast)**: el abastecimiento se calcula con el **forecast / pronóstico**.
+
+Al configurar un producto en un local con **Min y Max**, se cambia el método de abastecimiento: el sistema deja de
+mirar el forecast y repone con los **mínimos y máximos configurados por local y por estadístico**.
+
+Este programa hace dos cosas: (1) decide **qué productos conviene pasar de TDF a Min/Max** y (2) **calcula su Min y Max**.
+Como la data viene en TDF, los Min/Max que traiga el BI no se usan (no aplican en ese método), y tampoco los
+*Días SS* (stock de seguridad de TDF).
+""")
+
+with st.expander("Paso 1 · Qué productos pasan de TDF a Min/Max", expanded=True):
     st.markdown(f"""
-**Filas que se conservan.** Se calcula por cada combinación **Local × Estadístico**. De todo el BI solo se
-procesan los productos de "pronóstico cero", es decir, los que cumplen **una** de estas condiciones:
-- La suma del pronóstico de los 12 días (**SUMA**) es **≤ {p.umbral_pronostico_12d:g}** unidades.
-- **UNICOS ≤ {p.umbral_unicos}**: pocos valores distintos en el pronóstico, es decir, el pronóstico se repite y no es confiable.
+El cálculo es por cada combinación **Local × Estadístico**. El producto **pasa de TDF a Min/Max** si el forecast
+no es confiable para abastecer, es decir, si cumple **cualquiera** de estas tres condiciones; si no cumple ninguna,
+**se queda en TDF** y no aparece en el archivo:
 
-**Consumo diario.** El BI entrega el consumo acumulado del mes. Se divide para los días transcurridos:
+1. **Pronóstico cero o sin pronóstico:** la suma de los 12 días es 0.
+2. **Pronóstico bajo:** `pronóstico promedio diario × FREC  <  {p.pct_empaque_min_max:.0%} del Empq_final`.
+3. **Pronóstico repetido:** `UNICOS ≤ {p.umbral_unicos}`. UNICOS cuenta cuántos de los 12 valores del pronóstico aparecen una sola vez;
+   si el forecast copia los mismos valores (semana 2 = semana 1), casi no hay valores únicos y el pronóstico no es confiable.
+
+**Importante:** las condiciones 1 y 3 aplican **aunque el producto tenga subempaque / Empq_final = 1**. Con empaque 1, TDF puede
+completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o está repetido el pronóstico
+está mal, y TDF trabajaría con un dato incorrecto; por eso pasa a Min/Max.
+
+Detalle de la condición 2:
+
+- **Pronóstico promedio diario** = suma del pronóstico de los 12 días (**SUMA**) ÷ 12.
+- **FREC** = días entre despachos del local (**FREC ENTRE DESP** del BI{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
+- **Empq_final** = empaque con el que realmente se despacha (el SUBEMPAQUE si existe; si no, el EMPAQUE).
+
+**Idea de fondo:** si en el ciclo entre dos despachos se espera vender menos de {p.pct_empaque_min_max:.0%} de un empaque, el forecast
+es tan pequeño que no sirve para abastecer bien; conviene un Min/Max fijo. Las columnas `PRON x FREC`, `% PRON/EMPQ`, `UNICOS`
+y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
+
+**Consumo diario.** El BI entrega el consumo acumulado del mes; se divide para los días transcurridos:
 
 `CONSUMO DIA = CONSUMOS ACU ÷ {p.dias_transcurridos} días transcurridos`
 
@@ -181,22 +233,21 @@ procesan los productos de "pronóstico cero", es decir, los que cumplen **una** 
 se asume "Si" para todos y la regla B del Min puede aplicarse a más productos de los debidos.
 """)
 
-with st.expander("Regla del MIN (se evalúa en este orden)", expanded=True):
+with st.expander("Paso 2 · Regla del MIN (se evalúa en este orden)", expanded=True):
     st.markdown(f"""
 Todos los valores se redondean al **entero más cercano** (mitad hacia arriba, como el `REDONDEAR` de Excel).
-`FREC` = días entre despachos (**FREC ENTRE DESP** del BI{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
 
 | Regla | Condición | Min |
 |---|---|---|
 | **A** | El consumo diario es **mayor que la exhibición** (`CONSUMO DIA > Exhi`) | `REDONDEAR(CONSUMO DIA × FREC)` |
-| **B** | No aplica A, y además: el producto es **apto**, la exhibición cubre **menos de {p.umbral_dg_exhi:g} días** (`Exhi ÷ CONSUMO DIA`), `Dias SS ≤ {p.max_dias_ss_ajuste}` y `CONSUMO DIA × FREC > Exhi` | `REDONDEAR(CONSUMO DIA × FREC)` |
+| **B** | No aplica A, y además: el producto es **apto**, la exhibición cubre **menos de {p.umbral_dg_exhi:g} días** (`Exhi ÷ CONSUMO DIA`) y `CONSUMO DIA × FREC > Exhi` | `REDONDEAR(CONSUMO DIA × FREC)` |
 | **C** | Cualquier otro caso (la gran mayoría) | `Min = Exhi` (la exhibición) |
 
 **Idea de fondo:** el Min nunca puede ser menor que la exhibición. Solo sube cuando la venta diaria es
 tan alta que la exhibición no alcanza a cubrir los días hasta el próximo despacho.
 """)
 
-with st.expander("Regla del MAX", expanded=True):
+with st.expander("Paso 3 · Regla del MAX", expanded=True):
     extra_txt = (f"\n\n**Cobertura adicional activa:** el incremento sube hasta cubrir **{p.dias_cobertura_max:g} días** "
                  "de consumo, en múltiplos del incremento mínimo de despacho." if p.dias_cobertura_max > 0 else
                  "\n\nLa cobertura adicional está **desactivada** (el Max solo suma el incremento mínimo de despacho).")
@@ -215,16 +266,33 @@ El programa **siempre respeta el SUBEMPAQUE real del BI**: nunca asume un subemp
 Las propuestas para subempacar van aparte, en la hoja *SUGERIR SUBEMPAQUE* (es un cambio de maestro, no se aplica al Max).{extra_txt}
 """)
 
+with st.expander("Reglas de sugerencia de SUBEMPAQUE"):
+    st.markdown(f"""
+Un producto sin subempaque en un local aparece en la hoja **SUGERIR SUBEMPAQUE** solo si cumple **todo** lo siguiente:
+
+1. **Nunca** es de las familias: **{", ".join(p.familias_no_subempacar) or "(ninguna)"}**, ni es un ESTADISTICO excluido manualmente
+   ({", ".join(map(str, p.skus_no_subempacar)) if p.skus_no_subempacar else "ninguno"}).
+2. Cumple **al menos uno** de estos criterios:
+   - **PVP alto:** PVP ≥ **{p.pvp_alto:g}**.
+   - **Bajo consumo:** CONSUMO DIA < **{p.sub_consumo_bajo_dia:g}** unidades/día.
+   - **Exhibición baja:** Exhi ÷ EMPAQUE < **{p.sub_pct_exhi_max:.0%}**.
+3. Tiene EMPAQUE ≥ **{p.min_empaque_sugerir_sub}** unidades.
+4. El mismo SKU **ya está subempacado** en al menos **{p.min_locales_con_sub}** local(es) del BI (o está en la lista manual);
+   ese valor es el subempaque sugerido.
+
+**Prioridad:** ALTA si cumple 2 o 3 criterios; MEDIA si cumple solo uno. La hoja muestra cuánto bajaría el Max si se subempaca.
+""")
+
 with st.expander("Hojas del Excel que se descarga"):
     st.markdown(f"""
-- **Pronóstico cero:** el resultado completo, con Min y Max listos para cargar. Incluye columnas de control
-  (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`).
+- **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Incluye columnas de control
+  (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `PRON x FREC`, `% PRON/EMPQ`, `% CONSUMO/EMPQ`).
 - **REVISAR:** casos fuera de parámetros o complejos para revisar a mano, ordenados por prioridad (ALTA primero):
-  - *Prioridad ALTA:* consumo mayor que la exhibición (regla A), producto sin pronóstico, inventario neto negativo, producto de temporada.
+  - *Prioridad ALTA:* **pronóstico cero o consumo real ≥ 1 empaque por ciclo** (el forecast lo manda a Min/Max, pero el consumo real
+    es alto), consumo mayor que la exhibición (regla A), sin pronóstico, inventario neto negativo, producto de temporada.
   - *Prioridad MEDIA:* exhibición que no cubre la frecuencia de despacho, pronóstico hasta el próximo despacho mayor que la exhibición,
-    pronóstico repetido con consumo real muy superior, consumo real mayor a **{p.revisar_ratio_consumo:g}×** el pronóstico,
-    cobertura del Max mayor a **{p.revisar_dgmax_dias:g} días**, y Min nuevo que difiere más de **{p.revisar_var_bi:.0%}** del Min vigente en el BI.
-- **SUGERIR SUBEMPAQUE:** productos sin subempaque cuyo mismo SKU ya está subempacado en otros locales
-  (EMPAQUE ≥ {p.min_empaque_sugerir_sub}). Muestra cuánto bajaría el Max si se subempaca.
+    pronóstico repetido con consumo real muy superior, y cobertura del Max mayor a **{p.revisar_dgmax_dias:g} días**.
+  - Tip: la columna `% CONSUMO/EMPQ` permite filtrar a mano los productos con consumo real alto aunque no estén en esta hoja.
+- **SUGERIR SUBEMPAQUE:** propuestas de cambio de maestro (ver reglas arriba).
 - **Resumen:** indicadores del proceso y esta misma leyenda de reglas.
 """)
