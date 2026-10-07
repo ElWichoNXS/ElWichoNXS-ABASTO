@@ -7,7 +7,8 @@ import io
 import pandas as pd
 import streamlit as st
 
-from motor_minmax import Params, leer_aptos, leer_bi, procesar
+from motor_minmax import (Params, exportar_excel, leer_aptos, leer_bi,
+                          marcar_revision, procesar)
 
 st.set_page_config(page_title="Min/Max · Pronóstico cero", layout="wide")
 st.title("Min / Max por local · Pronóstico cero")
@@ -19,6 +20,7 @@ with st.sidebar:
     p = Params(
         dias_ventana_consumo=st.number_input("Días de la ventana de consumo", 1, 30, 5),
         umbral_pronostico_12d=st.number_input("Umbral pronóstico 12 días (≤)", 0.0, 100.0, 6.0),
+        umbral_unicos=st.number_input("UNICOS máximo (≤)", 0, 12, 5),
         umbral_dg_exhi=st.number_input("Exhi cubre menos de (días) → sube Min", 0.5, 10.0, 2.0),
         max_dias_ss_ajuste=st.number_input("Ajuste fino solo si Dias SS ≤", 0, 30, 4),
     )
@@ -29,7 +31,7 @@ with st.sidebar:
 # ---------------- Carga ----------------
 c1, c2 = st.columns(2)
 f_bi = c1.file_uploader("1) Excel del BI (obligatorio)", type=["xlsx"])
-f_ap = c2.file_uploader("2) Lista de APTOS (opcional: col A = ESTADISTICO, col C = Si/No)",
+f_ap = c2.file_uploader("2) Maestro de productos (columnas 'Estadístico' y 'Apto para PTL')",
                         type=["xlsx"])
 
 if f_bi:
@@ -56,12 +58,18 @@ if f_bi:
     k[3].metric("Ajustadas (A + B)", f"{r['regla_A'] + r['regla_B']:,}")
     k[4].metric("Para REVISAR", f"{r['filas_con_aviso_revisar']:,}")
 
-    st.dataframe(salida.head(500), use_container_width=True)
+    rev = marcar_revision(salida, p)
+    r["filas_en_hoja_REVISAR"] = len(rev)
+    r["revisar_prioridad_alta"] = int((rev["PRIORIDAD"] == "Prioridad ALTA").sum())
+    st.metric("Casos en hoja REVISAR", f"{len(rev):,}",
+              f"{r['revisar_prioridad_alta']} de prioridad alta", delta_color="off")
+
+    t1, t2 = st.tabs(["Resultado", "Casos a revisar"])
+    t1.dataframe(salida.head(500), use_container_width=True)
+    t2.dataframe(rev, use_container_width=True)
 
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        salida.to_excel(w, index=False, sheet_name="Pronóstico cero")
-        pd.DataFrame([r]).T.rename(columns={0: "valor"}).to_excel(w, sheet_name="Resumen")
+    exportar_excel(salida, rev, r, buf)
     st.download_button("⬇️ Descargar Excel procesado", buf.getvalue(),
                        file_name="Pronostico_cero_procesado.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
