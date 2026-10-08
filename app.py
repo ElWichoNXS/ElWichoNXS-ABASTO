@@ -12,91 +12,82 @@ from motor_minmax import (ColumnasPronosticoError, Params, exportar_excel, leer_
 
 st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon="📦", layout="wide")
 
-try:
-    OSCURO = (st.context.theme.type or "light") == "dark"
-except Exception:
-    OSCURO = False
-
-if OSCURO:
-    ROJO, ROJO_OSC, ROJO_CLARO, GRIS = "#FF4B55", "#E30613", "#2A1114", "#F5E9EA"
-    FONDO, BORDE, SUAVE, SOMBRA = "#1E0F11", "#4a2226", "#b9a3a5", "rgba(0,0,0,.45)"
-    HERO_A, HERO_B, TXT_HERO = "#B00510", "#6e0309", "#ffd9dc"
-    BTN_TXT, TITULO_SB, VALOR = "#fff", "#FF8A91", "#FF6B73"
-else:
-    ROJO, ROJO_OSC, ROJO_CLARO, GRIS = "#E30613", "#B00510", "#FDF1F1", "#2B2B2B"
-    FONDO, BORDE, SUAVE, SOMBRA = "#FFFFFF", "#f0d4d6", "#6b6b6b", "rgba(0,0,0,.06)"
-    HERO_A, HERO_B, TXT_HERO = "#E30613", "#B00510", "#ffe5e7"
-    BTN_TXT, TITULO_SB, VALOR = "#fff", "#B00510", "#E30613"
+# Colores que funcionan igual en modo claro y oscuro (no dependen de detectar el tema):
+# el texto y los fondos heredan del tema de Streamlit; solo el rojo es fijo.
+ROJO = "#E4252F"                                   # legible sobre blanco y sobre fondo oscuro
+BORDE = "color-mix(in srgb, currentColor 18%, transparent)"
+SUAVE = "color-mix(in srgb, currentColor 62%, transparent)"
+TARJETA = "color-mix(in srgb, currentColor 5%, transparent)"
 
 st.markdown(f"""
 <style>
-/* ---------- Base ---------- */
 .block-container {{ padding-top: 1.2rem; max-width: 1500px; }}
-h1, h2, h3, h4 {{ color: {GRIS}; letter-spacing: -0.2px; }}
+h1, h2, h3, h4 {{ letter-spacing: -0.2px; }}
 header[data-testid="stHeader"] {{ background: transparent; }}
 
-/* ---------- Banner superior ---------- */
+/* Banner (siempre rojo con texto blanco) */
 .hero {{
-    background: linear-gradient(110deg, {HERO_A} 0%, {HERO_B} 100%);
+    background: linear-gradient(110deg, #E30613 0%, #A30410 100%);
     border-radius: 14px; padding: 26px 32px; margin-bottom: 22px;
-    box-shadow: 0 6px 18px rgba(227,6,19,.25);
+    box-shadow: 0 6px 18px rgba(227,6,19,.30);
 }}
 .hero h1 {{ color: #fff !important; margin: 0; font-size: 2rem; font-weight: 800; }}
-.hero p  {{ color: {TXT_HERO}; margin: 6px 0 0 0; font-size: 1rem; }}
+.hero p  {{ color: #ffe5e7 !important; margin: 6px 0 0 0; font-size: 1rem; }}
 .hero .tag {{ display:inline-block; background:#fff; color:#E30613; font-weight:700;
     font-size:.72rem; letter-spacing:1px; padding:3px 10px; border-radius:20px; margin-bottom:10px; }}
 
-/* ---------- Barra lateral ---------- */
-section[data-testid="stSidebar"] {{ border-right: 3px solid {ROJO}; }}
+/* Barra lateral */
+section[data-testid="stSidebar"] {{ border-right: 3px solid #E30613; }}
 section[data-testid="stSidebar"] h2 {{
     color: #fff !important; background: #E30613; padding: 10px 14px; border-radius: 8px;
     font-size: 1.05rem; margin-bottom: 4px;
 }}
 section[data-testid="stSidebar"] h3 {{
-    color: {TITULO_SB}; font-size: .95rem; border-bottom: 2px solid {ROJO_CLARO};
+    color: {ROJO} !important; font-size: .95rem; border-bottom: 2px solid {BORDE};
     padding-bottom: 4px; margin-top: 1.1rem;
 }}
 
-/* ---------- Tarjetas de métricas ---------- */
+/* Tarjetas de métricas */
 div[data-testid="stMetric"] {{
-    background: {FONDO}; border: 1px solid {BORDE}; border-left: 6px solid {ROJO};
-    border-radius: 10px; padding: 14px 16px; box-shadow: 0 2px 8px {SOMBRA};
+    background: {TARJETA}; border: 1px solid {BORDE}; border-left: 6px solid #E30613;
+    border-radius: 10px; padding: 14px 16px;
 }}
-div[data-testid="stMetricLabel"] p {{ color: {SUAVE}; font-size: .82rem; font-weight: 600; }}
-div[data-testid="stMetricValue"] {{ color: {VALOR}; font-weight: 800; }}
+div[data-testid="stMetricLabel"] p {{ font-weight: 600; opacity: .75; }}
+div[data-testid="stMetricValue"] {{ color: {ROJO}; font-weight: 800; }}
 
-/* ---------- Carga de archivos ---------- */
+/* Carga de archivos */
 div[data-testid="stFileUploader"] section {{
-    background: {ROJO_CLARO}; border: 2px dashed {ROJO}; border-radius: 12px;
+    background: rgba(227,6,19,.08); border: 2px dashed #E30613; border-radius: 12px;
 }}
-div[data-testid="stFileUploader"] label p {{ font-weight: 700; color: {GRIS}; }}
+div[data-testid="stFileUploader"] label p {{ font-weight: 700; }}
 
-/* ---------- Botones ---------- */
+/* Botones */
 .stButton > button, .stDownloadButton > button {{
-    background: #E30613; color: {BTN_TXT}; border: none; border-radius: 10px;
+    background: #E30613; color: #fff; border: none; border-radius: 10px;
     padding: .65rem 1.4rem; font-weight: 700; box-shadow: 0 3px 10px rgba(227,6,19,.3);
 }}
 .stButton > button:hover, .stDownloadButton > button:hover {{
     background: #B00510; color: #fff; border: none;
 }}
+.stButton > button p, .stDownloadButton > button p {{ color: #fff; }}
 
-/* ---------- Pestañas ---------- */
-button[data-baseweb="tab"] {{ font-weight: 700; color: {SUAVE}; }}
+/* Pestañas */
+button[data-baseweb="tab"] {{ font-weight: 700; }}
 button[data-baseweb="tab"][aria-selected="true"] {{ color: {ROJO}; }}
-div[data-baseweb="tab-highlight"] {{ background-color: {ROJO}; height: 3px; }}
+div[data-baseweb="tab-highlight"] {{ background-color: #E30613; height: 3px; }}
 
-/* ---------- Tablas y expanders ---------- */
+/* Tablas y expanders */
 div[data-testid="stDataFrame"] {{ border: 1px solid {BORDE}; border-radius: 10px; overflow: hidden; }}
-div[data-testid="stExpander"] {{ border: 1px solid {BORDE}; border-radius: 10px; background: {FONDO}; }}
-div[data-testid="stExpander"] summary p {{ font-weight: 700; color: {TITULO_SB}; }}
+div[data-testid="stExpander"] {{ border: 1px solid {BORDE}; border-radius: 10px; background: {TARJETA}; }}
+div[data-testid="stExpander"] summary p {{ font-weight: 700; color: {ROJO}; }}
 hr {{ border-color: {BORDE}; }}
 
-/* ---------- Títulos de sección ---------- */
+/* Títulos de sección */
 .seccion {{
-    border-left: 6px solid {ROJO}; padding: 2px 0 2px 12px; margin: 26px 0 12px 0;
-    font-size: 1.25rem; font-weight: 800; color: {GRIS};
+    border-left: 6px solid #E30613; padding: 2px 0 2px 12px; margin: 26px 0 12px 0;
+    font-size: 1.25rem; font-weight: 800;
 }}
-.seccion small {{ display:block; font-weight:400; color:{SUAVE}; font-size:.85rem; }}
+.seccion small {{ display:block; font-weight:400; opacity:.65; font-size:.85rem; }}
 </style>
 """, unsafe_allow_html=True)
 
