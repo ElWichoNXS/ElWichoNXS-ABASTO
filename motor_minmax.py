@@ -25,7 +25,8 @@ import pandas as pd
 class Params:
     dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
     # --- Qué filas pasan de TDF a Min/Max ---
-    factor_suma_exhi: float = 0.6        # pasa a Min/Max si la SUMA del pronóstico total < 60 % de la Exhibición
+    factor_prom_exhi: float = 0.55       # regla 3: promedio diario del pronóstico < 55 % de la Exhibición ...
+    pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
     umbral_unicos: int = 5               # pronóstico "lineal": UNICOS <= 5 (valores repetidos / planos = poco confiable)
     # --- Cálculo del Min ---
     umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura (regla B)
@@ -42,9 +43,9 @@ class Params:
     # --- Sugerencias de subempaque (el Max usa SIEMPRE el SUBEMPAQUE real del BI) ---
     min_empaque_sugerir_sub: int = 6     # solo se sugiere subempacar si EMPAQUE >= 6
     min_locales_con_sub: int = 1         # el SKU debe estar subempacado en >= N locales del BI
-    pvp_alto: float = 5.0                # criterio 1: PVP >= 5 (aprox. 10 % de productos más caros)
-    sub_consumo_bajo_dia: float = 1.0    # criterio 2: consumo diario < 1 unidad/día = bajo consumo
-    sub_pct_exhi_max: float = 0.5        # criterio 3: Exhi / EMPAQUE < 50 %
+    sub_dias_venta_empaque: float = 30.0 # criterio 1 (sobrestock): el local tarda > 30 días en vender UN empaque completo
+    pvp_alto: float = 5.0                # criterio 2: producto de PVP alto (>= 5): también se revisa su subempaque
+    exigir_apto_subempaque: bool = True  # solo se sugiere si el maestro dice 'Apto para PTL' = Si
     familias_no_subempacar: tuple = ("CERVEZAS", "CERVEZAS SIN ALCOHOL", "AGUAS")  # nunca se subempacan
     skus_no_subempacar: tuple = ()       # ESTADISTICOS específicos que nunca se subempacan
     skus_sub_extra: tuple = ()           # SKUs que sabes subempacables aunque el BI no los muestre subempacados
@@ -184,18 +185,19 @@ def leer_bi(archivo) -> pd.DataFrame:
 
 
 def leer_aptos(archivo) -> pd.DataFrame:
-    """Maestro de productos: usa 'Estadístico' y 'Apto para PTL' (por nombre de columna)."""
+    """Maestro de productos: columnas 'Estadístico' y 'Apto para PTL' (Si / No).
+    'Apto para PTL' se usa en la regla B del Min y como aptitud para subempaque."""
     a = pd.read_excel(archivo)
     a.columns = [str(c).strip() for c in a.columns]
     col_e = next(c for c in a.columns if c.lower().startswith("estad"))
     col_a = next(c for c in a.columns if c.lower().startswith("apto"))
-    a = a[[col_e, col_a]].copy()
-    a.columns = ["ESTADISTICO", "APTO"]
-    a["ESTADISTICO"] = pd.to_numeric(a["ESTADISTICO"], errors="coerce")
-    a = a.dropna(subset=["ESTADISTICO"]).drop_duplicates("ESTADISTICO")
-    a["ESTADISTICO"] = a["ESTADISTICO"].astype("int64")
-    a["APTO"] = a["APTO"].astype(str).str.strip().str.capitalize()
-    return a
+    a2 = a[[col_e, col_a]].copy()
+    a2.columns = ["ESTADISTICO", "APTO"]
+    a2["ESTADISTICO"] = pd.to_numeric(a2["ESTADISTICO"], errors="coerce")
+    a2 = a2.dropna(subset=["ESTADISTICO"]).drop_duplicates("ESTADISTICO")
+    a2["ESTADISTICO"] = a2["ESTADISTICO"].astype("int64")
+    a2["APTO"] = a2["APTO"].astype(str).str.strip().str.capitalize()
+    return a2
 
 
 # --------------------------------------------------------------------------
@@ -249,30 +251,37 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     df["UNICOS"] = unicos
     sin_pron = np.all(np.isnan(V), axis=1)
 
-    # Filtro TDF -> Min/Max. Pasa a Min/Max si el pronóstico:
-    #   a) es CERO / no existe (SUMA = 0)
-    #   b) es LINEAL: UNICOS <= umbral (los valores se repiten o son planos = forecast poco confiable)
-    #   c) en TOTAL suma menos que la EXHIBICIÓN (SUMA < Exhi): el forecast ni alcanza para llenar la exhibición
-    # Pasa si cumple CUALQUIERA; si no cumple ninguna (pronóstico normal), se queda en TDF.
+    # Filtro TDF -> Min/Max. Pasa a Min/Max si:
+    #   1) pronóstico CERO / inexistente (SUMA = 0)                      -> siempre pasa
+    #   2) pronóstico LINEAL: UNICOS <= umbral (repetido / plano)         -> siempre pasa
+    #   3) y 4) JUNTAS: promedio diario del pronóstico < 55 % de la Exhi  Y
+    #           promedio x (FREC + Dias SS) < 50 % del Empq_final
+    #      Si cumple la 3 pero el forecast SÍ cubre la mitad del empaque final, se queda en TDF.
+    # Si no cumple ninguna, el pronóstico es normal y se queda en TDF.
     exhi_v = pd.to_numeric(df["Exhi"], errors="coerce").fillna(0).values
+    prom_v = suma / n_dias
+    cob_v = prom_v * (df["FREC EFECTIVA"].values + df["Dias SS"].values)    # unidades que cubre el forecast hasta el próximo despacho + SS
     cero = suma == 0
     lineal = unicos <= p.umbral_unicos
-    suma_lt_exhi = suma < p.factor_suma_exhi * exhi_v
-    cond_mm = cero | lineal | suma_lt_exhi
+    r3 = prom_v < p.factor_prom_exhi * exhi_v
+    r4 = cob_v < p.pct_empaque_cobertura * df["Empq_final"].values
+    r34 = r3 & r4
+    cond_mm = cero | lineal | r34
     seg = {                                   # segmentos mutuamente excluyentes (suman el total del BI)
         "1_pasa_pronostico_cero": int(cero.sum()),
-        "2_pasa_solo_suma_menor_exhi": int((suma_lt_exhi & ~lineal & ~cero).sum()),
-        "3_pasa_lineal_y_suma_menor_exhi": int((suma_lt_exhi & lineal & ~cero).sum()),
-        "4_pasa_solo_lineal": int((lineal & ~suma_lt_exhi & ~cero).sum()),
-        "5_queda_en_TDF": int((~cond_mm).sum()),
+        "2_pasa_pronostico_lineal": int((lineal & ~cero).sum()),
+        "3_pasa_prom_exhi_y_cobertura_empaque": int((r34 & ~lineal & ~cero).sum()),
+        "4_tdf_rescatado_por_cobertura_empaque": int((r3 & ~r4 & ~lineal & ~cero).sum()),
+        "5_tdf_pronostico_normal": int((~cond_mm & ~(r3 & ~r4)).sum()),
         "total_BI": n_in,
     }
-    pct_txt = f"{p.factor_suma_exhi:.0%}"
     motivo = np.where(cero, "Pronóstico cero",
-              np.where(lineal & suma_lt_exhi, f"Pronóstico lineal + suma < {pct_txt} de la Exhibición",
-              np.where(suma_lt_exhi, f"Suma del pronóstico < {pct_txt} de la Exhibición",
-              np.where(lineal, "Pronóstico lineal (repetido)", ""))))
+              np.where(lineal, "Pronóstico lineal (repetido)",
+              np.where(r34, f"Promedio < {p.factor_prom_exhi:.0%} de la Exhibición y cobertura (FREC+SS) < {p.pct_empaque_cobertura:.0%} del empaque", "")))
     df["MOTIVO MIN/MAX"] = motivo
+    df["COBERTURA TDF"] = np.round(cob_v, 2)
+    df["% COBERTURA/EMPQ"] = cob_v / df["Empq_final"].replace(0, np.nan).values
+    df["% PROM/EXHI"] = prom_v / np.where(exhi_v > 0, exhi_v, np.nan)
     df = df[cond_mm].copy().reset_index(drop=True)
     V = V[cond_mm]
     sin_pron = sin_pron[cond_mm]
@@ -299,9 +308,6 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         [df["_sin_pronostico"], rep & insuf, rep, insuf],
         ["Sin pronóstico", "Repetido e insuficiente", "Valores repetidos", "Insuficiente (<1 u/día)"],
         default="Pronóstico normal")
-    exhi_n = pd.to_numeric(df["Exhi"], errors="coerce").fillna(0)
-    df["% SUMA/EXHI"] = df["SUMA"] / exhi_n.replace(0, np.nan)          # cuánto de la exhibición cubre el pronóstico total
-    df["SUMA < EXHI"] = np.where(df["SUMA"] < p.factor_suma_exhi * exhi_n, "Si", "No")   # cumple la condición configurada
 
     # 3) SUBEMPAQUE: se respeta el del BI (lo que el sistema realmente tiene configurado).
     #    Las propuestas de subempacar van aparte (ver sugerir_subempaque).
@@ -381,7 +387,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         if c == "Físico":
             cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
                      "FREC EFECTIVA", "PRON PROM DIA", "% CONSUMO/EMPQ",
-                     "PRON CICLO", "DIAG PRONOSTICO", "% SUMA/EXHI", "SUMA < EXHI", "MOTIVO MIN/MAX"]
+                     "PRON CICLO", "DIAG PRONOSTICO", "% PROM/EXHI", "COBERTURA TDF", "% COBERTURA/EMPQ", "MOTIVO MIN/MAX"]
         if c == "Exhi":
             cols += ["CON>EXHI", "DG EXHIBICION", "DG EXHI = DG MIN"]
     resto = [c for c in df.columns if c not in cols]
@@ -459,14 +465,17 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
 # HOJA "SUGERIR SUBEMPAQUE"
 # --------------------------------------------------------------------------
 def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
-    """Productos SIN subempaque en un local que conviene subempacar.
-    Reglas:
-      1. Nunca: familias excluidas (CERVEZAS, CERVEZAS SIN ALCOHOL, AGUAS) ni ESTADISTICOS excluidos.
-      2. Solo si cumple al menos UNO de: PVP alto, bajo consumo, o Exhi/EMPAQUE < 50 %.
-      3. El mismo SKU debe estar ya subempacado en otros locales del BI (o figurar en `skus_sub_extra`).
+    """Productos SIN subempaque en un local que conviene subempacar PARA EVITAR SOBRESTOCK.
+    Un producto se sugiere solo si cumple TODO lo siguiente:
+      1. Es apto para subempaque: el maestro de productos dice 'Apto para PTL' = Si, no es de las familias excluidas
+         (CERVEZAS, CERVEZAS SIN ALCOHOL, AGUAS), no es un ESTADISTICO excluido y tiene EMPAQUE >= mínimo.
+      2. El mismo SKU ya está subempacado en al menos N locales del BI (o figura en `skus_sub_extra`).
+      3. Hay riesgo de sobrestock: enviar el EMPAQUE completo genera sobrestock (el local tarda más de N días en
+         venderlo, o no tuvo consumo) O el producto es de PVP alto (no conviene enviar stock de más con valor alto).
     Es una propuesta de cambio de maestro: el Max de la hoja principal NO la aplica."""
     p = p or Params()
     emp = df["EMPAQUE"].astype(float)
+    R = df["CONSUMO DIA"].astype(float)
     inc_act = pd.Series(xround(emp / 2, 0), index=df.index)
     n_sub = df["_N_LOC_SUB"].fillna(0)
     evid_bi = n_sub >= p.min_locales_con_sub
@@ -476,19 +485,24 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
 
     prohibido = (df["FAMILIA"].astype(str).str.strip().str.upper().isin([f.upper() for f in p.familias_no_subempacar])
                  | df["ESTADISTICO"].isin(p.skus_no_subempacar))
+    # Apto = columna 'Apto para PTL' del maestro de productos (sin maestro se asume "Si")
+    no_apto = (df["APTO"] != "Si") if p.exigir_apto_subempaque else pd.Series(False, index=df.index)
+
+    # Sobrestock si se envía el empaque completo
+    dias_emp = pd.Series(np.where(R > 0, emp / R.where(R > 0), np.nan), index=df.index)   # días que tarda en venderse un empaque
+    sin_consumo = R <= 0
+    c_sobre = sin_consumo | (dias_emp > p.sub_dias_venta_empaque)
     pvp = pd.to_numeric(df["PVP"], errors="coerce")
     c_pvp = pvp >= p.pvp_alto
-    c_cons = df["CONSUMO DIA"] < p.sub_consumo_bajo_dia
-    pct_exhi = df["Exhi"] / emp.replace(0, np.nan)
-    c_exhi = pct_exhi < p.sub_pct_exhi_max
 
     cand = ((df["SUBEMPAQUE"] == 0) & (emp >= p.min_empaque_sugerir_sub) & (evid_bi | extra) &
-            (sub_sug > 0) & (sub_sug < inc_act) & ~prohibido & (c_pvp | c_cons | c_exhi))
+            (sub_sug > 0) & (sub_sug < inc_act) & ~prohibido & ~no_apto & (c_sobre | c_pvp))
     s = df[cand].copy()
     if s.empty:
         return pd.DataFrame()
     s["SUB SUGERIDO"] = sub_sug[cand].astype(int)
-    s["% EXHI/EMPAQUE"] = pct_exhi[cand]
+    s["DIAS VENDER EMPAQUE"] = dias_emp[cand]
+    s["DIAS VENDER SUB"] = np.where(R[cand] > 0, s["SUB SUGERIDO"] / R[cand].where(R[cand] > 0), np.nan)
     mx_sub, _ = _calc_max(s["Min"], s["CONSUMO DIA"], s["EMPAQUE"], s["SUB SUGERIDO"], p)
     s["MAX CON SUB"] = mx_sub
     s["REDUCCION MAX"] = s["Max"] - s["MAX CON SUB"]
@@ -498,16 +512,19 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
                               + " de " + s["_N_LOC_SKU"].fillna(0).astype(int).astype(str) + " locales",
                               "SKU de la lista manual")
     s["VALORES EN OTROS LOCALES"] = s["_SUB_VALORES"].fillna("")
-    n_crit = c_pvp[cand].astype(int) + c_cons[cand].astype(int) + c_exhi[cand].astype(int)
-    partes = pd.DataFrame({"PVP alto": c_pvp[cand], "Bajo consumo": c_cons[cand],
-                           f"Exhi < {p.sub_pct_exhi_max:.0%} del empaque": c_exhi[cand]})
-    s["MOTIVO"] = partes.apply(lambda r: " + ".join(k for k, v in r.items() if v), axis=1)
-    s["PRIORIDAD"] = np.where(n_crit >= 2, "Prioridad ALTA", "Prioridad MEDIA")
+    so, sc, pv = c_sobre[cand], sin_consumo[cand], c_pvp[cand]
+    s["MOTIVO"] = [
+        " + ".join(x for x in (
+            ("Sobrestock: sin consumo, un empaque completo queda parado" if c else
+             f"Sobrestock: un empaque tarda más de {p.sub_dias_venta_empaque:g} días en venderse") if o else "",
+            "PVP alto" if v else "") if x)
+        for o, c, v in zip(so, sc, pv)]
+    s["PRIORIDAD"] = np.where(so & pv, "Prioridad ALTA", "Prioridad MEDIA")
     s = s.rename(columns={"SUBEMPAQUE": "SUB ACTUAL", "Max": "MAX ACTUAL"})
     cols = ["PRIORIDAD", "MOTIVO", "CD", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA",
-            "EMPAQUE", "SUB ACTUAL", "SUB SUGERIDO", "EVIDENCIA", "VALORES EN OTROS LOCALES", "Exhi",
-            "% EXHI/EMPAQUE", "CONSUMO DIA", "Min", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX", "PVP",
-            "REDUCCION VALOR"]
+            "EMPAQUE", "SUB ACTUAL", "SUB SUGERIDO", "APTO", "EVIDENCIA", "VALORES EN OTROS LOCALES",
+            "CONSUMO DIA", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "Exhi", "Min", "MAX ACTUAL", "MAX CON SUB",
+            "REDUCCION MAX", "PVP", "REDUCCION VALOR"]
     s = s[[c for c in cols if c in s.columns]]
     return s.sort_values(["PRIORIDAD", "REDUCCION VALOR"], ascending=[True, False]).reset_index(drop=True)
 
@@ -535,9 +552,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         "Descripción": [
             "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de este archivo son las que conviene pasar a método Min/Max, "
             "donde se usan los Min y Max configurados por local y estadístico en lugar del forecast",
-            "Pasa a Min/Max el producto cuyo pronóstico NO es normal: (a) pronóstico cero o sin pronóstico, (b) pronóstico lineal: "
-            "UNICOS <= 5 (valores repetidos o planos), o (c) la SUMA del pronóstico total no cubre ni el 60 % de la Exhibición (SUMA < 60 % Exhi; porcentaje configurable). "
-            "La columna MOTIVO MIN/MAX indica cuál aplicó. Los pronósticos normales se quedan en TDF y no aparecen aquí",
+            "Pasa a Min/Max si: (1) pronóstico cero o sin pronóstico, (2) pronóstico lineal (UNICOS <= 5), o (3 y 4 JUNTAS) el promedio diario del pronóstico "
+            "es menor al 55 % de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el 50 % del Empq_final. Si cumple la 3 pero el forecast cubre la mitad "
+            "del empaque final, se queda en TDF. Cero y lineal pasan siempre. La columna MOTIVO MIN/MAX indica cuál aplicó. Lo demás se queda en TDF y no aparece aquí",
             "CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / días del mes transcurridos (parámetro)",
             "Días entre despachos. Por defecto es FREC ENTRE DESP del BI; opcionalmente el mayor intervalo real según LUNES..DOMINGO",
             "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)",
@@ -550,9 +567,11 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             "(4) 'Sobrestock por cubrir exhibición' (BAJA, informativo): el sobre stock se debe a llenar la exhibición (la Exhi sola cubre > 120 días, o cubre >= 80 % de los días del Max); "
             "se separa en consumo <= 0.5 u/día y consumo > 0.5 u/día. "
             "No se listan advertencias operativas normales",
-            "Productos sin subempaque que cumplen PVP alto, bajo consumo o Exhi/EMPAQUE < 50 %, cuyo mismo SKU ya está subempacado en otros locales. "
-            "Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. Es una propuesta de cambio de maestro; muestra el Max resultante",
-            "PRON PROM DIA = SUMA / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; % SUMA/EXHI = qué parte de la exhibición cubre el pronóstico total; SUMA < EXHI = Si cuando ese porcentaje es menor al configurado (60 % por defecto)"],
+            "Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de 30 días en venderlo o no tuvo consumo) "
+            "o que son de PVP alto, siempre que sean aptos (maestro de productos: 'Apto para PTL' = Si) y el mismo SKU ya esté subempacado "
+            "en al menos N locales. Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. "
+            "Es una propuesta de cambio de maestro; muestra el Max resultante",
+            "PRON PROM DIA = SUMA / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; % PROM/EXHI = promedio diario del pronóstico / Exhibición; COBERTURA TDF = promedio x (FREC + Dias SS); % COBERTURA/EMPQ = esa cobertura / Empq_final (< 50 % y % PROM/EXHI < 55 % = pasa a Min/Max)"],
     })
     rs = pd.DataFrame(list(resumen.items()), columns=["Indicador", "Valor"])
 
@@ -583,8 +602,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE",
                "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA", "FREC ENTRE DESP", "Físico",
                "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
-        pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% SUMA/EXHI"}
-        dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
+        pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
+        dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
                "PVP", "REDUCCION VALOR"}
         for nombre, d in hojas:
             ws_ = w.sheets[nombre]
