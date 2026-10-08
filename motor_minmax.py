@@ -455,11 +455,140 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     rev["_ord"] = rev["PRIORIDAD"].map({"Prioridad ALTA": 0, "Prioridad MEDIA": 1, "Prioridad BAJA": 2})
     rev = rev.sort_values(["_ord", "UNIDADES SOBRE MAX", "FALTANTE VS CICLO"], ascending=[True, False, False]).drop(columns="_ord")
     rev["DIAS INVENTARIO"] = rev["DIAS INVENTARIO"].replace(np.inf, 9999)   # sin consumo en el mes
-    cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
+    rev = _sugerir_acciones(rev, p)
+    cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "ACCIÓN PRINCIPAL", "SUGERENCIA A REALIZAR", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
             "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "Empq_final", "SUBEMPAQUE", "FREC EFECTIVA",
             "CONSUMO DIA", "CONSUMO CICLO", "Exhi", "INV NETO", "DIAS INVENTARIO", "UNIDADES SOBRE MAX",
-            "Min", "Max", "COBERTURA EXHI (DIAS)", "COBERTURA MAX (DIAS)", "FALTANTE VS CICLO", "_regla_min", "MOTIVO MIN/MAX"]
+            "Min", "Max", "COBERTURA EXHI (DIAS)", "COBERTURA MAX (DIAS)", "FALTANTE VS CICLO", "PVP",
+            "VIABILIDAD SUBEMPAQUE", "SUB SUGERIDO", "MAX CON SUB", "REDUCCION MAX", "_regla_min", "MOTIVO MIN/MAX"]
     return rev[[c for c in cols if c in rev.columns]].reset_index(drop=True)
+
+
+def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
+    """Para cada caso de REVISAR: analiza si subempacar es viable y propone la acción a realizar.
+    Prioridad de soluciones: 1) corregir el dato (inventario / consumo), 2) subempacar si es viable y reduce el Max,
+    3) otras soluciones (reducir exhibición, transferir excedente, retirar del surtido), 4) informativo."""
+    if rev.empty:
+        for c in ("ACCIÓN PRINCIPAL", "SUGERENCIA A REALIZAR", "VIABILIDAD SUBEMPAQUE", "SUB SUGERIDO", "MAX CON SUB", "REDUCCION MAX"):
+            rev[c] = pd.Series(dtype=object)
+        return rev
+    rev = rev.copy()
+    emp = pd.to_numeric(rev["EMPAQUE"], errors="coerce").fillna(0).astype(float)
+    R = rev["CONSUMO DIA"].astype(float)
+    sub_act = pd.to_numeric(rev["SUBEMPAQUE"], errors="coerce").fillna(0)
+    n_sub = rev["_N_LOC_SUB"].fillna(0) if "_N_LOC_SUB" in rev else pd.Series(0, index=rev.index)
+    extra = rev["ESTADISTICO"].isin(p.skus_sub_extra)
+    ref = rev["_SUB_REF"] if "_SUB_REF" in rev else pd.Series(np.nan, index=rev.index)
+    sub_sug = pd.Series(np.where(n_sub >= 1, ref, np.where(extra, 1, np.nan)), index=rev.index, dtype=float)
+    sub_sug = np.minimum(sub_sug, emp)
+    inc_act = pd.Series(xround(emp / 2, 0), index=rev.index)
+    prohibido_fam = rev["FAMILIA"].astype(str).str.strip().str.upper().isin([f.upper() for f in p.familias_no_subempacar])
+    prohibido_sku = rev["ESTADISTICO"].isin(p.skus_no_subempacar)
+    no_apto = (rev["APTO"] != "Si") if (p.exigir_apto_subempaque and "APTO" in rev) else pd.Series(False, index=rev.index)
+
+    mx_sub, _ = _calc_max(rev["Min"], R, emp, sub_sug.fillna(0), p)
+    mx_sub = pd.Series(mx_sub, index=rev.index)
+    reduccion = (rev["Max"] - mx_sub).where(sub_sug.notna() & (sub_sug > 0))
+
+    viab, estado = [], []
+    for i in rev.index:
+        if sub_act[i] > 0:
+            viab.append(f"Ya tiene subempaque ({sub_act[i]:g})"); estado.append("ya")
+        elif prohibido_fam[i] or prohibido_sku[i]:
+            viab.append("No viable: familia o estadístico excluido de subempaque"); estado.append("no")
+        elif no_apto[i]:
+            viab.append("No viable: no es apto para PTL según el maestro"); estado.append("no")
+        elif emp[i] < p.min_empaque_sugerir_sub:
+            viab.append(f"No viable: empaque de {emp[i]:g} (mínimo {p.min_empaque_sugerir_sub})"); estado.append("no")
+        elif not (n_sub[i] >= 1 or extra[i]):
+            viab.append("No viable: el SKU no está subempacado en ningún local"); estado.append("no")
+        elif not (sub_sug[i] > 0 and sub_sug[i] < inc_act[i]) or not (reduccion[i] > 0):
+            viab.append(f"No útil: el subempaque de referencia ({sub_sug[i]:g}) no reduce el Max"); estado.append("no")
+        elif n_sub[i] >= p.min_locales_con_sub or extra[i]:
+            viab.append(f"Viable: SKU subempacado en {int(n_sub[i])} locales"); estado.append("si")
+        else:
+            viab.append(f"Posible, validar: SKU subempacado solo en {int(n_sub[i])} local(es) (mínimo {p.min_locales_con_sub})"); estado.append("posible")
+
+    rev["VIABILIDAD SUBEMPAQUE"] = viab
+    ok_sub = pd.Series([e in ("si", "posible") for e in estado], index=rev.index)
+    rev["SUB SUGERIDO"] = sub_sug.where(ok_sub).astype("Float64").round(0)
+    rev["MAX CON SUB"] = mx_sub.where(ok_sub).astype("Float64").round(0)
+    rev["REDUCCION MAX"] = reduccion.where(ok_sub).astype("Float64").round(0)
+
+    exhi = pd.to_numeric(rev["Exhi"], errors="coerce").fillna(0)
+    inv = pd.to_numeric(rev["INV NETO"], errors="coerce")
+    cexhi = rev["COBERTURA EXHI (DIAS)"]
+    cmax = rev["COBERTURA MAX (DIAS)"]
+    acciones, textos = [], []
+    for k, i in enumerate(rev.index):
+        motivos = str(rev.at[i, "MOTIVOS DE REVISIÓN"]).split(" | ")
+        partes, principal = [], None
+
+        def add(cat, txt):
+            nonlocal principal
+            if principal is None:
+                principal = cat
+            partes.append(txt)
+
+        for mo in motivos:
+            if mo.startswith("Inventario"):
+                add("Corregir inventario",
+                    f"Corregir inventario: INV NETO = {inv[i]:g}. Hacer conteo físico y ajustar el inventario del local; "
+                    "con inventario negativo el abastecimiento queda distorsionado.")
+            elif mo.startswith("Consumo diario"):
+                rel = f"{R[i] / exhi[i]:.1f} veces" if exhi[i] > 0 else "con Exhi = 0, muy por encima de"
+                add("Revisar exhibición / consumo",
+                    f"Revisar exhibición y consumo: el consumo diario ({R[i]:.1f}) es {rel} la Exhi ({exhi[i]:g}). "
+                    f"Validar si el consumo es atípico (promoción, dato erróneo) o subir la Exhi; el Min ya está en {int(rev.at[i, 'Min'])}.")
+            elif mo.startswith("Sobre stock"):
+                e = estado[k]
+                if e == "si":
+                    add("Subempacar",
+                        f"SUBEMPACAR a {int(rev.at[i, 'SUB SUGERIDO'])}: {viab[k][8:]}. El Max baja de {int(rev.at[i, 'Max'])} a "
+                        f"{int(rev.at[i, 'MAX CON SUB'])} (−{int(rev.at[i, 'REDUCCION MAX'])} u; cobertura de {cmax[i]:.0f} a "
+                        f"{(rev.at[i, 'MAX CON SUB'] / R[i]):.0f} días).")
+                elif e == "posible":
+                    add("Evaluar subempaque",
+                        f"Evaluar SUBEMPACAR a {int(rev.at[i, 'SUB SUGERIDO'])} (solo en {int(n_sub[i])} local(es); validar con el maestro): "
+                        f"el Max bajaría de {int(rev.at[i, 'Max'])} a {int(rev.at[i, 'MAX CON SUB'])}. Si no se aprueba: reducir la Exhi "
+                        f"(hoy cubre {cexhi[i]:.0f} días) o transferir el excedente a otro local.")
+                elif e == "ya":
+                    add("Reducir exhibición / retirar del surtido",
+                        f"Ya está subempacado ({sub_act[i]:g}). El sobre stock sale de Exhi + Min: reducir la Exhi (hoy cubre {cexhi[i]:.0f} días) "
+                        f"o retirar el producto del surtido del local (consumo {R[i]:.2f} u/día).")
+                else:
+                    add("Reducir exhibición / retirar del surtido",
+                        f"Subempacar no es posible ({viab[k]}). Otras opciones: reducir la Exhi (hoy cubre {cexhi[i]:.0f} días), "
+                        f"transferir el excedente a otro local, o retirar el producto del surtido si la rotación es muy baja ({R[i]:.2f} u/día).")
+            elif mo.startswith("Sobrestock por cubrir exhibición"):
+                if "<=" in mo:
+                    add("Reducir exhibición / retirar del surtido",
+                        f"Sobre stock por la exhibición (la Exhi cubre {cexhi[i]:.0f} días; consumo {R[i]:.2f} u/día, muy bajo). "
+                        "Evaluar reducir la Exhi o retirar el producto del surtido del local; subempacar no lo resuelve.")
+                else:
+                    add("Informativo",
+                        f"Informativo: la exhibición explica el sobre stock (Exhi cubre {cexhi[i]:.0f} días, consumo {R[i]:.2f} u/día). "
+                        "Mantener salvo que el espacio permita reducir la Exhi.")
+        acciones.append(principal or "Informativo")
+        textos.append(" | ".join(partes))
+    rev["ACCIÓN PRINCIPAL"] = acciones
+    rev["SUGERENCIA A REALIZAR"] = textos
+    return rev
+
+
+def marcar_en_revision(df: pd.DataFrame, rev: pd.DataFrame) -> pd.DataFrame:
+    """Agrega a la hoja principal las columnas EN REVISAR / PRIORIDAD REVISAR / ACCIÓN REVISAR (para filtrar)."""
+    df = df.drop(columns=[c for c in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR") if c in df.columns]).copy()
+    llaves = [c for c in ("CD", "Local", "ESTADISTICO") if c in df.columns and c in rev.columns]
+    if not llaves or rev.empty:
+        df["EN REVISAR"] = "No"; df["PRIORIDAD REVISAR"] = ""; df["ACCIÓN REVISAR"] = ""
+        return df
+    mapa = rev[llaves + ["PRIORIDAD", "ACCIÓN PRINCIPAL"]].drop_duplicates(llaves)
+    unido = df[llaves].merge(mapa, on=llaves, how="left")
+    df["EN REVISAR"] = np.where(unido["PRIORIDAD"].notna().values, "Sí", "No")
+    df["PRIORIDAD REVISAR"] = unido["PRIORIDAD"].fillna("").values
+    df["ACCIÓN REVISAR"] = unido["ACCIÓN PRINCIPAL"].fillna("").values
+    return df
 
 
 # --------------------------------------------------------------------------
@@ -583,7 +712,9 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
                 f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
         ("Hoja REVISAR", f"Solo casos extremos: inventario físico negativo (ALTA); consumo diario >= {p.factor_consumo_exhi:g} veces la Exhibición (ALTA); "
-                         f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); y sobre stock por cubrir la exhibición (BAJA, informativo)."),
+                         f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); y sobre stock por cubrir la exhibición (BAJA, informativo). "
+                         "Cada caso trae ACCIÓN PRINCIPAL y SUGERENCIA A REALIZAR: corregir el dato, subempacar si es viable y reduce el Max, o reducir exhibición / transferir / retirar del surtido. "
+                         "En 'Pronóstico cero' esas filas se marcan (EN REVISAR) para filtrarlas."),
         ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
                                     f"venderlo o no tuvo consumo) o de PVP alto; {'solo con PVP >= ' + format(p.pvp_alto, 'g') + ' (filtro obligatorio); ' if p.exigir_pvp_alto else 'PVP >= ' + format(p.pvp_alto, 'g') + ' = alto; '}aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
                                     f"y el mismo SKU ya subempacado en al menos {p.min_locales_con_sub} locales. Nunca {', '.join(p.familias_no_subempacar) or '(ninguna familia)'}."),
@@ -602,10 +733,16 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
 
     p = p or Params()
     sug = sug if sug is not None else pd.DataFrame()
+    df = marcar_en_revision(df, rev)
     privadas = [c for c in df.columns if isinstance(c, str) and c.startswith("_")]
     res = df.drop(columns=[c for c in privadas if c in df.columns])
     res.columns = [c.strftime("%Y-%m-%d") if isinstance(c, (dt.datetime, pd.Timestamp)) else c
                    for c in res.columns]
+    marcas = [c for c in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR") if c in res.columns]
+    if "Max" in res.columns:                       # las marcas van pegadas al Max
+        resto = [c for c in res.columns if c not in marcas]
+        pos = resto.index("Max") + 1
+        res = res[resto[:pos] + marcas + resto[pos:]]
 
     # Paleta
     ROJO, ROJO_OSC, ROJO_CLARO, ROSA = "E30613", "A30410", "FDECEC", "F9C9CD"
@@ -669,12 +806,44 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                             cel.fill = f_min if es_min else f_max
                             cel.font = Font(bold=True, name="Arial", color=ROJO_OSC)
                             cel.alignment = Alignment(horizontal="center")
+                if col in ("SUGERENCIA A REALIZAR", "MOTIVOS DE REVISIÓN", "VIABILIDAD SUBEMPAQUE") and n:
+                    for r in range(2, n + 2):
+                        ws.cell(row=r, column=i).alignment = Alignment(wrap_text=True, vertical="top")
+                if col == "SUGERENCIA A REALIZAR":
+                    ws.column_dimensions[get_column_letter(i)].width = 95
+                if col in ("ACCIÓN PRINCIPAL", "PRIORIDAD") and nombre == "REVISAR":
+                    ws.column_dimensions[get_column_letter(i)].width = 40 if col == "ACCIÓN PRINCIPAL" else 17
+                    for r in range(2, n + 2):
+                        ws.cell(row=r, column=i).alignment = Alignment(wrap_text=True, vertical="top")
+                if col == "VIABILIDAD SUBEMPAQUE":
+                    ws.column_dimensions[get_column_letter(i)].width = 42
+                if col in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR"):
+                    ws.column_dimensions[get_column_letter(i)].width = {"EN REVISAR": 12, "PRIORIDAD REVISAR": 18, "ACCIÓN REVISAR": 30}[col]
+                    ws.cell(row=1, column=i).fill = PatternFill("solid", fgColor="ED7D31")
                 if str(col) in ("CON>EXHI", "DG EXHI = DG MIN") and n:
                     rango = f"{get_column_letter(i)}2:{get_column_letter(i)}{n + 1}"
                     ws.conditional_formatting.add(rango, CellIsRule(
                         operator="equal", formula=['"REVISAR"'],
                         font=Font(bold=True, color="9C0006"), fill=PatternFill("solid", bgColor="FFC7CE")))
 
+        # Marca de color en las filas de la hoja principal que están en REVISAR
+        wp = w.sheets["Pronóstico cero"]
+        col_idx = {c: i for i, c in enumerate(res.columns, 1)}
+        pf = {"Prioridad ALTA": PatternFill("solid", fgColor="F8CBAD"),
+              "Prioridad MEDIA": PatternFill("solid", fgColor="FFE699"),
+              "Prioridad BAJA": PatternFill("solid", fgColor="DDEBF7")}
+        if "EN REVISAR" in col_idx and "PRIORIDAD REVISAR" in col_idx:
+            ie, ip, ia = col_idx["EN REVISAR"], col_idx["PRIORIDAD REVISAR"], col_idx.get("ACCIÓN REVISAR")
+            for r, (en, pr) in enumerate(zip(res["EN REVISAR"], res["PRIORIDAD REVISAR"]), 2):
+                if en == "Sí":
+                    for ci in (ie, ip, ia):
+                        if ci:
+                            c = wp.cell(row=r, column=ci)
+                            c.fill = pf.get(pr, PatternFill("solid", fgColor="FFE699"))
+                            c.font = Font(bold=True, name="Arial")
+                    for nombre_col in ("Local", "ESTADISTICO"):
+                        if nombre_col in col_idx:
+                            wp.cell(row=r, column=col_idx[nombre_col]).fill = pf.get(pr, PatternFill("solid", fgColor="FFE699"))
         ws = w.sheets["REVISAR"]
         alta = PatternFill("solid", fgColor="F8CBAD")
         media = PatternFill("solid", fgColor="FFF2CC")
@@ -871,6 +1040,17 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             tabla(["Prioridad", "Filas", "Estadísticos distintos", "% del total"], filas)
         else:
             tabla(["Prioridad", "Filas"], [("Sin casos para revisar", 0)])
+
+        if len(rev) and "ACCIÓN PRINCIPAL" in rev:
+            titulo("6b. Acción sugerida para los casos de REVISAR")
+            orden_a = ["Corregir inventario", "Revisar exhibición / consumo", "Subempacar", "Evaluar subempaque",
+                       "Reducir exhibición / retirar del surtido", "Informativo"]
+            filas = []
+            for k in orden_a:
+                s = rev[rev["ACCIÓN PRINCIPAL"] == k]
+                if len(s):
+                    filas.append((k, len(s), int(s["ESTADISTICO"].nunique()), len(s) / len(rev)))
+            tabla(["Acción principal", "Filas", "Estadísticos distintos", "% del total"], filas)
 
         # 7) Subempaque
         titulo("7. Sugerencias de subempaque (hoja SUGERIR SUBEMPAQUE)")

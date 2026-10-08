@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from motor_minmax import (ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
-                          leer_bi, marcar_revision, procesar, sugerir_subempaque)
+                          leer_bi, marcar_en_revision, marcar_revision, procesar, sugerir_subempaque)
 
 st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon="📦", layout="wide")
 
@@ -278,6 +278,7 @@ if f_bi:
                 "sugerencias de subempaque (no se descarta ningún producto por no ser apto).")
 
     rev = marcar_revision(salida, p)
+    salida = marcar_en_revision(salida, rev)
     sug = sugerir_subempaque(salida, p)
     r.pop("filas_con_aviso_revisar", None)       # métrica vieja (DG EXHI = DG MIN), ya no se usa
     r["sugerencias_subempaque"] = len(sug)
@@ -445,13 +446,16 @@ inmovilizar y muestra, para cada caso, los días que tardaría en venderse el em
 
 with st.expander("Hojas del Excel que se descarga"):
     st.markdown(f"""
-- **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Incluye columnas de control
+- **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Las filas que además están en REVISAR se marcan con color y con las columnas `EN REVISAR`, `PRIORIDAD REVISAR` y `ACCIÓN REVISAR` (para filtrarlas). Incluye columnas de control
   (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ`, `% CONSUMO/EMPQ`).
 - **REVISAR:** **solo casos extremos**; el resto de avisos operativos no se lista.
   - *Prioridad ALTA:* **Inventario Físico Negativo** (`INV NETO < 0`) y **Consumo diario triplica la Exhibición** (`CONSUMO DIA ≥ {p.factor_consumo_exhi:g} × Exhi`).
   - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), excepto lo que se explica por la exhibición (ver BAJA).
   - *Prioridad BAJA (informativo):* **Sobrestock por cubrir exhibición**: el exceso de stock se debe a llenar la exhibición (la Exhi sola cubre más de {p.sobrestock_dias:g} días, o cubre al menos el {p.pct_exhi_en_cobertura:.0%} de los días del Max). Se separa en dos: **consumo ≤ {p.consumo_bajo_exhi:g} u/día** y **consumo > {p.consumo_bajo_exhi:g} u/día**.
   - Los productos sin consumo no se revisan: solo se mantiene la exhibición (Min = Exhi).
+  - **Cada caso trae una ACCIÓN PRINCIPAL y una SUGERENCIA A REALIZAR.** Orden de soluciones: (1) corregir el dato (inventario negativo, consumo atípico); (2) **subempacar**, si es viable
+    (apto, no es de una familia excluida, empaque ≥ {p.min_empaque_sugerir_sub} y el SKU ya está subempacado en ≥ {p.min_locales_con_sub} locales) y reduce el Max, mostrando el subempaque y el Max resultante;
+    (3) si no es viable, otras soluciones: reducir la exhibición, transferir el excedente o retirar el producto del surtido; (4) informativo. La columna *VIABILIDAD SUBEMPAQUE* explica por qué sí o no.
 - **SUGERIR SUBEMPAQUE:** propuestas de cambio de maestro para evitar sobrestock (ver reglas arriba).
 - **Resumen:** indicadores del proceso y esta misma leyenda de reglas.
 """)
