@@ -10,13 +10,98 @@ import streamlit as st
 from motor_minmax import (ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
                           leer_bi, marcar_revision, procesar, sugerir_subempaque)
 
-st.set_page_config(page_title="Min/Max · Pronóstico cero", layout="wide")
-st.title("Min / Max por local · Pronóstico cero")
-st.caption("Carga el Excel crudo del BI, ajusta los parámetros de la izquierda y descarga el archivo procesado.")
+st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon="📦", layout="wide")
+
+ROJO, ROJO_OSC, ROJO_CLARO, GRIS = "#E30613", "#B00510", "#FDF1F1", "#2B2B2B"
+
+st.markdown(f"""
+<style>
+/* ---------- Base ---------- */
+.block-container {{ padding-top: 1.2rem; max-width: 1500px; }}
+h1, h2, h3, h4 {{ color: {GRIS}; letter-spacing: -0.2px; }}
+header[data-testid="stHeader"] {{ background: transparent; }}
+
+/* ---------- Banner superior ---------- */
+.hero {{
+    background: linear-gradient(110deg, {ROJO} 0%, {ROJO_OSC} 100%);
+    border-radius: 14px; padding: 26px 32px; margin-bottom: 22px;
+    box-shadow: 0 6px 18px rgba(227,6,19,.25);
+}}
+.hero h1 {{ color: #fff !important; margin: 0; font-size: 2rem; font-weight: 800; }}
+.hero p  {{ color: #ffe5e7; margin: 6px 0 0 0; font-size: 1rem; }}
+.hero .tag {{ display:inline-block; background:#fff; color:{ROJO}; font-weight:700;
+    font-size:.72rem; letter-spacing:1px; padding:3px 10px; border-radius:20px; margin-bottom:10px; }}
+
+/* ---------- Barra lateral ---------- */
+section[data-testid="stSidebar"] {{ background: #fff; border-right: 3px solid {ROJO}; }}
+section[data-testid="stSidebar"] h2 {{
+    color: #fff !important; background: {ROJO}; padding: 10px 14px; border-radius: 8px;
+    font-size: 1.05rem; margin-bottom: 4px;
+}}
+section[data-testid="stSidebar"] h3 {{
+    color: {ROJO_OSC}; font-size: .95rem; border-bottom: 2px solid {ROJO_CLARO};
+    padding-bottom: 4px; margin-top: 1.1rem;
+}}
+
+/* ---------- Tarjetas de métricas ---------- */
+div[data-testid="stMetric"] {{
+    background: #fff; border: 1px solid #f0d4d6; border-left: 6px solid {ROJO};
+    border-radius: 10px; padding: 14px 16px; box-shadow: 0 2px 8px rgba(0,0,0,.05);
+}}
+div[data-testid="stMetricLabel"] p {{ color: #6b6b6b; font-size: .82rem; font-weight: 600; }}
+div[data-testid="stMetricValue"] {{ color: {ROJO}; font-weight: 800; }}
+
+/* ---------- Carga de archivos ---------- */
+div[data-testid="stFileUploader"] section {{
+    background: {ROJO_CLARO}; border: 2px dashed {ROJO}; border-radius: 12px;
+}}
+div[data-testid="stFileUploader"] label p {{ font-weight: 700; color: {GRIS}; }}
+
+/* ---------- Botones ---------- */
+.stButton > button, .stDownloadButton > button {{
+    background: {ROJO}; color: #fff; border: none; border-radius: 10px;
+    padding: .65rem 1.4rem; font-weight: 700; box-shadow: 0 3px 10px rgba(227,6,19,.3);
+}}
+.stButton > button:hover, .stDownloadButton > button:hover {{
+    background: {ROJO_OSC}; color: #fff; border: none;
+}}
+
+/* ---------- Pestañas ---------- */
+button[data-baseweb="tab"] {{ font-weight: 700; color: #6b6b6b; }}
+button[data-baseweb="tab"][aria-selected="true"] {{ color: {ROJO}; }}
+div[data-baseweb="tab-highlight"] {{ background-color: {ROJO}; height: 3px; }}
+
+/* ---------- Tablas y expanders ---------- */
+div[data-testid="stDataFrame"] {{ border: 1px solid #f0d4d6; border-radius: 10px; overflow: hidden; }}
+div[data-testid="stExpander"] {{ border: 1px solid #f0d4d6; border-radius: 10px; background: #fff; }}
+div[data-testid="stExpander"] summary p {{ font-weight: 700; color: {ROJO_OSC}; }}
+hr {{ border-color: #f0d4d6; }}
+
+/* ---------- Títulos de sección ---------- */
+.seccion {{
+    border-left: 6px solid {ROJO}; padding: 2px 0 2px 12px; margin: 26px 0 12px 0;
+    font-size: 1.25rem; font-weight: 800; color: {GRIS};
+}}
+.seccion small {{ display:block; font-weight:400; color:#777; font-size:.85rem; }}
+</style>
+""", unsafe_allow_html=True)
+
+
+def seccion(titulo, sub=""):
+    st.markdown(f'<div class="seccion">{titulo}<small>{sub}</small></div>', unsafe_allow_html=True)
+
+
+st.markdown("""
+<div class="hero">
+  <span class="tag">ABASTECIMIENTO</span>
+  <h1>Min / Max por local · Pronóstico cero</h1>
+  <p>Carga el Excel crudo del BI, ajusta los parámetros de la izquierda y descarga el archivo procesado.</p>
+</div>
+""", unsafe_allow_html=True)
 
 # ---------------- Parámetros (barra lateral) ----------------
 with st.sidebar:
-    st.header("Parámetros de negocio")
+    st.header("⚙️ Parámetros de negocio")
     st.caption("Pasa el mouse sobre el signo ❓ de cada parámetro para ver qué significa.")
 
     st.subheader("1. Consumo")
@@ -135,6 +220,7 @@ with st.sidebar:
     p.skus_sub_extra = tuple(int(x) for x in extra.split() if x.strip().isdigit())
 
 # ---------------- Carga ----------------
+seccion("Carga de archivos", "Sube el BI y, opcionalmente, el maestro de productos")
 c1, c2 = st.columns(2)
 f_bi = c1.file_uploader("1) Excel del BI (obligatorio)", type=["xlsx"])
 f_ap = c2.file_uploader("2) Maestro de productos (columnas 'Estadístico' y 'Apto para PTL')",
@@ -189,6 +275,7 @@ if f_bi:
     r["filas_en_hoja_REVISAR"] = len(rev)
     r["revisar_prioridad_alta"] = int((rev["PRIORIDAD"] == "Prioridad ALTA").sum())
 
+    seccion("Resultados", "Indicadores principales del proceso")
     k = st.columns(5)
     k[0].metric("Filas BI", f"{r['filas_bi']:,}")
     k[1].metric("Pasan a Min/Max", f"{r['filas_resultado']:,}")
@@ -197,7 +284,7 @@ if f_bi:
     k[4].metric("Casos en hoja REVISAR", f"{len(rev):,}",
                 f"{r['revisar_prioridad_alta']} de prioridad alta", delta_color="off")
 
-    st.subheader("Segmentación del BI: qué se queda en TDF y qué pasa a Min/Max")
+    seccion("Segmentación del BI", "Qué se queda en TDF y qué pasa a Min/Max")
     seg = pd.DataFrame({
         "Segmento": ["Pasa a Min/Max · pronóstico cero o sin pronóstico",
                      "Pasa a Min/Max · pronóstico lineal (repetido)",
@@ -208,14 +295,22 @@ if f_bi:
                   r["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], r["segmento_4_tdf_rescatado_por_cobertura_empaque"],
                   r["segmento_5_tdf_pronostico_normal"], r["segmento_total_BI"]]})
     seg["% del BI"] = (seg["Filas"] / r["segmento_total_BI"]).map("{:.1%}".format)
-    st.dataframe(seg, hide_index=True, use_container_width=True)
+    seg["_pct"] = seg["Filas"] / r["segmento_total_BI"]
+    st.dataframe(
+        seg.rename(columns={"_pct": "Proporción"}), hide_index=True, use_container_width=True,
+        column_config={
+            "Filas": st.column_config.NumberColumn(format="%d"),
+            "Proporción": st.column_config.ProgressColumn(format=" ", min_value=0.0, max_value=1.0),
+        })
 
+    seccion("Diagnóstico del pronóstico")
     k2 = st.columns(4)
     k2[0].metric("Frec. efectiva > BI", f"{r['frec_efectiva_mayor_que_bi']:,}")
     k2[1].metric("Pronóstico insuficiente", f"{r['pronostico_insuficiente']:,}")
     k2[2].metric("Pronóstico repetido", f"{r['pronostico_valores_repetidos']:,}")
     k2[3].metric("Pronóstico ciclo > Exhi", f"{r['pronostico_ciclo_mayor_exhi']:,}")
 
+    seccion("Detalle", "Revisa el resultado antes de descargar")
     t1, t2, t3 = st.tabs(["Resultado (pasan a Min/Max)", "Casos a revisar", "Sugerir subempaque"])
     t1.dataframe(salida.head(500), use_container_width=True)
     t2.dataframe(rev, use_container_width=True)
@@ -235,8 +330,7 @@ if f_bi:
 # REGLAS DE CÁLCULO (siempre visible, al final de la página)
 # ======================================================================
 st.divider()
-st.header("📘 Reglas que usa el programa para calcular el Min y el Max")
-st.caption("Los valores resaltados son los parámetros que tienes configurados en este momento.")
+seccion("📘 Reglas que usa el programa para calcular el Min y el Max", "Se actualizan con los parámetros que tienes configurados")
 
 with st.expander("Contexto · TDF vs Min/Max", expanded=True):
     st.markdown("""
