@@ -1,10 +1,19 @@
+# Streamlit muestra en el menú ⋮ → Settings → Theme: Light / Dark / Use system setting
 [theme]
-base = "light"
+primaryColor = "#E30613"
+font = "sans serif"
+
+[theme.light]
 primaryColor = "#E30613"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#FDF1F1"
 textColor = "#2B2B2B"
-font = "sans serif"
+
+[theme.dark]
+primaryColor = "#FF4B55"
+backgroundColor = "#14090A"
+secondaryBackgroundColor = "#2A1114"
+textColor = "#F5E9EA"
 
 [server]
 maxUploadSize = 500
