@@ -41,7 +41,7 @@ class Params:
     consumo_bajo_exhi: float = 0.5       # corte para separar "Sobrestock por cubrir exhibición" en consumo <= 0.5 y > 0.5 u/día
     pct_exhi_en_cobertura: float = 0.8   # no es sobre stock si la Exhi explica >= 80 % de los días de cobertura del Max
     # --- Sugerencias de subempaque (el Max usa SIEMPRE el SUBEMPAQUE real del BI) ---
-    min_empaque_sugerir_sub: int = 6     # solo se sugiere subempacar si EMPAQUE >= 6
+    min_empaque_sugerir_sub: int = 7     # solo se sugiere subempacar si EMPAQUE >= 7
     min_locales_con_sub: int = 10         # el SKU debe estar subempacado en >= N locales del BI
     sub_dias_venta_empaque: float = 12.0 # criterio 1 (sobrestock): el local tarda > 12 días en vender UN empaque completo
     pvp_alto: float = 5.0                # criterio 2: producto de PVP alto (>= 5): también se revisa su subempaque

@@ -205,7 +205,7 @@ with st.sidebar:
         help="Un producto es apto si en el maestro de productos (archivo 2) su columna 'Apto para PTL' dice 'Si'. "
              "Si dice 'No', nunca se sugiere subempacarlo. Si no cargas el maestro, se asume 'Si' para todos y no se bloquea nada.")
     p.min_empaque_sugerir_sub = st.number_input(
-        "Solo si EMPAQUE ≥ (unidades)", 1, 100, 6,
+        "Solo si EMPAQUE ≥ (unidades)", 1, 100, 7,
         help="Solo se sugiere subempacar productos cuyo empaque tenga al menos esta cantidad de unidades.")
     p.min_locales_con_sub = st.number_input(
         "El SKU debe estar subempacado en al menos N locales", 1, 50, 10,
