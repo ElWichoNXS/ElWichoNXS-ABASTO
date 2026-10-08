@@ -30,18 +30,18 @@ with st.sidebar:
     )
 
     st.subheader("2. Qué productos pasan de TDF a Min/Max")
-    p.pct_empaque_min_max = st.number_input(
-        "Pronóstico × frecuencia menor a (% del empaque final)", 0.05, 3.0, 0.5, step=0.05, format="%.2f",
-        help="Pasa a Min/Max el producto cuyo (pronóstico promedio diario × FREC del local) sea MENOR a este "
-             "porcentaje del empaque final (Empq_final). 0.50 = 50 %. Si el pronóstico por ciclo de despacho "
-             "no llega ni a media caja, el forecast no justifica abastecer por TDF. Subir este valor "
-             "hace que pasen más productos a Min/Max.")
+    p.factor_suma_exhi = st.number_input(
+        "Suma del pronóstico total menor a (veces la Exhibición)", 0.1, 5.0, 1.0, step=0.1, format="%.1f",
+        help="Pasa a Min/Max el producto cuya SUMA de pronóstico (todos los días que trae el BI) es MENOR que la "
+             "Exhibición del local. Con 1.0 es la regla exacta: si en todo el horizonte se espera vender menos de lo que "
+             "cabe en la exhibición, el forecast no mueve el stock y conviene Min = Exhi. Subir este valor "
+             "(por ejemplo 1.5) hace que pasen más productos a Min/Max.")
     p.umbral_unicos = st.number_input(
-        "Pronóstico repetido: UNICOS menor o igual a", 0, 12, 5,
-        help="También pasa a Min/Max el producto con pronóstico REPETIDO. UNICOS = cuántos de los valores diarios "
-             "del pronóstico aparecen una sola vez. Un número bajo significa que el forecast repite los "
-             "mismos valores (la semana 2 copia a la semana 1), por lo que no es confiable para abastecer por TDF. "
-             "Con 5, pasan los productos que tienen 5 o menos valores únicos.")
+        "Pronóstico lineal: UNICOS menor o igual a", 0, 12, 5,
+        help="También pasa a Min/Max el producto con pronóstico LINEAL (repetido o plano). UNICOS = cuántos de los valores "
+             "diarios del pronóstico aparecen una sola vez. Un número bajo significa que el forecast repite los mismos valores "
+             "(por ejemplo, la semana 2 copia a la semana 1), por lo que no es confiable para abastecer por TDF. "
+             "Con 5, pasan los productos que tienen 5 o menos valores únicos. Un pronóstico normal tiene casi todos los valores distintos (UNICOS alto).")
 
     st.subheader("3. Cálculo del Min")
     p.umbral_dg_exhi = st.number_input(
@@ -188,12 +188,12 @@ if f_bi:
     st.subheader("Segmentación del BI: qué se queda en TDF y qué pasa a Min/Max")
     seg = pd.DataFrame({
         "Segmento": ["Pasa a Min/Max · pronóstico cero o sin pronóstico",
-                     "Pasa a Min/Max · pronóstico bajo",
-                     "Pasa a Min/Max · pronóstico bajo y repetido",
-                     "Pasa a Min/Max · solo pronóstico repetido",
-                     "SE QUEDA EN TDF (ninguna condición)", "Total BI"],
-        "Filas": [r["segmento_1_pasa_pronostico_cero"], r["segmento_2_pasa_pronostico_bajo"],
-                  r["segmento_3_pasa_pronostico_bajo_y_repetido"], r["segmento_4_pasa_solo_pronostico_repetido"],
+                     "Pasa a Min/Max · suma del pronóstico < Exhibición",
+                     "Pasa a Min/Max · pronóstico lineal y suma < Exhibición",
+                     "Pasa a Min/Max · solo pronóstico lineal",
+                     "SE QUEDA EN TDF (pronóstico normal)", "Total BI"],
+        "Filas": [r["segmento_1_pasa_pronostico_cero"], r["segmento_2_pasa_solo_suma_menor_exhi"],
+                  r["segmento_3_pasa_lineal_y_suma_menor_exhi"], r["segmento_4_pasa_solo_lineal"],
                   r["segmento_5_queda_en_TDF"], r["segmento_total_BI"]]})
     seg["% del BI"] = (seg["Filas"] / r["segmento_total_BI"]).map("{:.1%}".format)
     st.dataframe(seg, hide_index=True, use_container_width=True)
@@ -239,28 +239,26 @@ Como la data viene en TDF, los Min/Max que traiga el BI no se usan (no aplican e
 
 with st.expander("Paso 1 · Qué productos pasan de TDF a Min/Max", expanded=True):
     st.markdown(f"""
-El cálculo es por cada combinación **Local × Estadístico**. El producto **pasa de TDF a Min/Max** si el forecast
-no es confiable para abastecer, es decir, si cumple **cualquiera** de estas tres condiciones; si no cumple ninguna,
-**se queda en TDF** y no aparece en el archivo:
+El cálculo es por cada combinación **Local × Estadístico**. El producto **pasa de TDF a Min/Max** cuando su pronóstico
+**no es normal**, es decir, si cumple **cualquiera** de estas tres condiciones. Si el pronóstico es normal, **se queda en TDF**
+y no aparece en el archivo:
 
 1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0.
-2. **Pronóstico bajo:** `pronóstico promedio diario × FREC  <  {p.pct_empaque_min_max:.0%} del Empq_final`.
-3. **Pronóstico repetido:** `UNICOS ≤ {p.umbral_unicos}`. UNICOS cuenta cuántos de los valores diarios del pronóstico aparecen una sola vez;
-   si el forecast copia los mismos valores (semana 2 = semana 1), casi no hay valores únicos y el pronóstico no es confiable.
+2. **Pronóstico lineal:** `UNICOS ≤ {p.umbral_unicos}`. UNICOS cuenta cuántos de los valores diarios del pronóstico aparecen una sola vez;
+   si el forecast repite los mismos valores o es plano (por ejemplo, la semana 2 copia a la semana 1), casi no hay valores únicos
+   y el pronóstico no es confiable.
+3. **Suma del pronóstico menor que la exhibición:** `SUMA del pronóstico < {p.factor_suma_exhi:g} × Exhi`. Si en todo el horizonte del BI se espera
+   vender menos de lo que cabe en la exhibición, el forecast no mueve el stock; la exhibición manda y conviene Min/Max.
 
-**Importante:** las condiciones 1 y 3 aplican **aunque el producto tenga subempaque / Empq_final = 1**. Con empaque 1, TDF puede
-completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o está repetido el pronóstico
+**Un pronóstico normal** (valores que varían día a día, UNICOS alto) **y cuya suma supera la exhibición se queda en TDF**, aunque su
+venta diaria sea baja. Que un producto venda poco no basta para sacarlo de TDF.
+
+**Importante:** estas condiciones aplican **aunque el producto tenga subempaque / Empq_final = 1**. Con empaque 1, TDF puede
+completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o es lineal el pronóstico
 está mal, y TDF trabajaría con un dato incorrecto; por eso pasa a Min/Max.
 
-Detalle de la condición 2:
-
-- **Pronóstico promedio diario** = suma del pronóstico de todos los días que trae el BI (**SUMA**, normalmente 12; si el BI trae menos, por ejemplo 11, se divide para esos días).
-- **FREC** = días entre despachos del local (**FREC ENTRE DESP** del BI{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
-- **Empq_final** = empaque con el que realmente se despacha (el SUBEMPAQUE si existe; si no, el EMPAQUE).
-
-**Idea de fondo:** si en el ciclo entre dos despachos se espera vender menos de {p.pct_empaque_min_max:.0%} de un empaque, el forecast
-es tan pequeño que no sirve para abastecer bien; conviene un Min/Max fijo. Las columnas `PRON x FREC`, `% PRON/EMPQ`, `UNICOS`
-y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
+Las columnas `SUMA`, `UNICOS`, `SUMA < EXHI` y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
+**SUMA** = suma del pronóstico de todos los días que trae el BI (normalmente 12; si trae menos, por ejemplo 11, se suman esos días).
 
 **Consumo diario.** El BI entrega el consumo acumulado del mes; se divide para los días transcurridos:
 
@@ -323,7 +321,7 @@ Un producto sin subempaque en un local aparece en la hoja **SUGERIR SUBEMPAQUE**
 with st.expander("Hojas del Excel que se descarga"):
     st.markdown(f"""
 - **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Incluye columnas de control
-  (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `PRON x FREC`, `% PRON/EMPQ`, `% CONSUMO/EMPQ`).
+  (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `SUMA < EXHI`, `% CONSUMO/EMPQ`).
 - **REVISAR:** **solo casos extremos**; el resto de avisos operativos no se lista.
   - *Prioridad ALTA:* **Inventario Físico Negativo** (`INV NETO < 0`) y **Consumo diario triplica la Exhibición** (`CONSUMO DIA ≥ {p.factor_consumo_exhi:g} × Exhi`).
   - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), excepto lo que se explica por la exhibición (ver BAJA).

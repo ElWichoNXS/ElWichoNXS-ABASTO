@@ -25,8 +25,8 @@ import pandas as pd
 class Params:
     dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
     # --- Qué filas pasan de TDF a Min/Max ---
-    pct_empaque_min_max: float = 0.5     # pasa a Min/Max si (pronóstico promedio diario x FREC) < 50 % de Empq_final
-    umbral_unicos: int = 5               # pasa a Min/Max si UNICOS <= 5 (pronóstico con valores repetidos = poco confiable)
+    factor_suma_exhi: float = 1.0        # pasa a Min/Max si la SUMA del pronóstico total < 1.0 x Exhibición
+    umbral_unicos: int = 5               # pronóstico "lineal": UNICOS <= 5 (valores repetidos / planos = poco confiable)
     # --- Cálculo del Min ---
     umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura (regla B)
     usar_frec_efectiva: bool = False     # False: FREC del BI (promedio). True: MAYOR intervalo real entre despachos
@@ -242,35 +242,35 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     df["FREC EFECTIVA"] = frec_efectiva(df, p)
 
     # 1) SUMA 12 días y UNICOS (= SUMA(--(CONTAR.SI(rango;rango)=1)) de Excel) ----
-    suma = np.nansum(V, axis=1)
+    suma = np.round(np.nansum(V, axis=1), 4)          # mismo valor que se muestra en la columna SUMA
     igual = (V[:, :, None] == V[:, None, :]).sum(axis=2)     # NaN nunca es igual
     unicos = (igual == 1).sum(axis=1)
     df["SUMA"] = np.round(suma, 4)
     df["UNICOS"] = unicos
     sin_pron = np.all(np.isnan(V), axis=1)
 
-    # Filtro TDF -> Min/Max: pronóstico promedio diario x frecuencia < X % del empaque final
-    pron_prom = suma / n_dias
-    #   a) pronóstico cero / sin pronóstico (SUMA = 0)
-    #   b) pronóstico bajo: pronóstico promedio diario x FREC < X % de Empq_final
-    #   c) pronóstico repetido: UNICOS <= umbral (el forecast copia los mismos valores = poco confiable)
-    # Pasa a Min/Max si cumple CUALQUIERA; si no cumple ninguna, se queda en TDF.
+    # Filtro TDF -> Min/Max. Pasa a Min/Max si el pronóstico:
+    #   a) es CERO / no existe (SUMA = 0)
+    #   b) es LINEAL: UNICOS <= umbral (los valores se repiten o son planos = forecast poco confiable)
+    #   c) en TOTAL suma menos que la EXHIBICIÓN (SUMA < Exhi): el forecast ni alcanza para llenar la exhibición
+    # Pasa si cumple CUALQUIERA; si no cumple ninguna (pronóstico normal), se queda en TDF.
+    exhi_v = pd.to_numeric(df["Exhi"], errors="coerce").fillna(0).values
     cero = suma == 0
-    bajo = (pron_prom * df["FREC EFECTIVA"].values) < p.pct_empaque_min_max * df["Empq_final"].values
-    repet = unicos <= p.umbral_unicos
-    cond_mm = bajo | repet | cero
+    lineal = unicos <= p.umbral_unicos
+    suma_lt_exhi = suma < p.factor_suma_exhi * exhi_v
+    cond_mm = cero | lineal | suma_lt_exhi
     seg = {                                   # segmentos mutuamente excluyentes (suman el total del BI)
         "1_pasa_pronostico_cero": int(cero.sum()),
-        "2_pasa_pronostico_bajo": int((bajo & ~repet & ~cero).sum()),
-        "3_pasa_pronostico_bajo_y_repetido": int((bajo & repet & ~cero).sum()),
-        "4_pasa_solo_pronostico_repetido": int((repet & ~bajo & ~cero).sum()),
+        "2_pasa_solo_suma_menor_exhi": int((suma_lt_exhi & ~lineal & ~cero).sum()),
+        "3_pasa_lineal_y_suma_menor_exhi": int((suma_lt_exhi & lineal & ~cero).sum()),
+        "4_pasa_solo_lineal": int((lineal & ~suma_lt_exhi & ~cero).sum()),
         "5_queda_en_TDF": int((~cond_mm).sum()),
         "total_BI": n_in,
     }
     motivo = np.where(cero, "Pronóstico cero",
-              np.where(bajo & repet, "Pronóstico bajo + repetido",
-              np.where(bajo, "Pronóstico bajo",
-              np.where(repet, "Pronóstico repetido", ""))))
+              np.where(lineal & suma_lt_exhi, "Pronóstico lineal + suma < Exhibición",
+              np.where(suma_lt_exhi, "Suma del pronóstico < Exhibición",
+              np.where(lineal, "Pronóstico lineal (repetido)", ""))))
     df["MOTIVO MIN/MAX"] = motivo
     df = df[cond_mm].copy().reset_index(drop=True)
     V = V[cond_mm]
@@ -292,8 +292,6 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     idx = np.clip(df["FREC EFECTIVA"].values, 1, n_dias) - 1
     df["PRON CICLO"] = np.round(cum[np.arange(len(df)), idx], 2)      # venta pronosticada hasta el próximo despacho
     df["PRON PROM DIA"] = np.round(df["SUMA"] / n_dias, 2)
-    df["PRON x FREC"] = np.round(df["SUMA"] / n_dias * df["FREC EFECTIVA"], 2)
-    df["% PRON/EMPQ"] = df["PRON x FREC"] / df["Empq_final"]
     insuf = df["PRON PROM DIA"] < p.umbral_venta_prom_dia
     rep = df["UNICOS"] <= p.umbral_unicos
     df["DIAG PRONOSTICO"] = np.select(
@@ -380,7 +378,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         cols.append(c)
         if c == "Físico":
             cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
-                     "FREC EFECTIVA", "PRON PROM DIA", "PRON x FREC", "% PRON/EMPQ", "% CONSUMO/EMPQ",
+                     "FREC EFECTIVA", "PRON PROM DIA", "% CONSUMO/EMPQ",
                      "PRON CICLO", "DIAG PRONOSTICO", "SUMA < EXHI", "MOTIVO MIN/MAX"]
         if c == "Exhi":
             cols += ["CON>EXHI", "DG EXHIBICION", "DG EXHI = DG MIN"]
@@ -535,9 +533,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         "Descripción": [
             "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de este archivo son las que conviene pasar a método Min/Max, "
             "donde se usan los Min y Max configurados por local y estadístico en lugar del forecast",
-            "Pasa a Min/Max el producto cuyo pronóstico NO es confiable para abastecer por forecast: (a) pronóstico cero o sin pronóstico, "
-            "(b) pronóstico bajo: promedio diario x FREC < 50 % de Empq_final, o (c) pronóstico repetido: UNICOS <= 5. "
-            "La columna MOTIVO MIN/MAX indica cuál aplicó. Los que no cumplen ninguna se quedan en TDF y no aparecen aquí",
+            "Pasa a Min/Max el producto cuyo pronóstico NO es normal: (a) pronóstico cero o sin pronóstico, (b) pronóstico lineal: "
+            "UNICOS <= 5 (valores repetidos o planos), o (c) la SUMA del pronóstico total es menor que la Exhibición (SUMA < Exhi). "
+            "La columna MOTIVO MIN/MAX indica cuál aplicó. Los pronósticos normales se quedan en TDF y no aparecen aquí",
             "CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / días del mes transcurridos (parámetro)",
             "Días entre despachos. Por defecto es FREC ENTRE DESP del BI; opcionalmente el mayor intervalo real según LUNES..DOMINGO",
             "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)",
@@ -583,8 +581,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE",
                "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA", "FREC ENTRE DESP", "Físico",
                "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
-        pct = {"% PRON/EMPQ", "% CONSUMO/EMPQ", "% EXHI/EMPAQUE"}
-        dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON x FREC", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
+        pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE"}
+        dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
                "PVP", "REDUCCION VALOR"}
         for nombre, d in hojas:
             ws_ = w.sheets[nombre]
