@@ -326,7 +326,7 @@ if f_bi:
     t3.dataframe(sug, use_container_width=True)
 
     buf = io.BytesIO()
-    exportar_excel(salida, rev, r, buf, sug)
+    exportar_excel(salida, rev, r, buf, sug, p)
     st.download_button("⬇️ Descargar Excel procesado", buf.getvalue(),
                        file_name="Pronostico_cero_procesado.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

@@ -532,97 +532,414 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
 # --------------------------------------------------------------------------
 # EXPORTACIÓN A EXCEL (3 hojas)
 # --------------------------------------------------------------------------
+def _leyenda(p: "Params") -> list[tuple[str, str]]:
+    """Reglas explicadas, con los parámetros realmente usados."""
+    frec = "el mayor intervalo real entre despachos" if p.usar_frec_efectiva else "FREC ENTRE DESP del BI"
+    cob = (f"; cobertura adicional de {p.dias_cobertura_max:g} días en múltiplos de ese incremento"
+           if p.dias_cobertura_max > 0 else "")
+    return [
+        ("Contexto", "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de la hoja 'Pronóstico cero' son las que conviene "
+                     "pasar a método Min/Max, donde se usan los Min y Max configurados por local y estadístico en lugar del forecast."),
+        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (UNICOS <= {p.umbral_unicos}); o (3 y 4 juntas) el promedio diario del "
+                               f"pronóstico es menor al {p.factor_prom_exhi:.0%} de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el {p.pct_empaque_cobertura:.0%} del "
+                               "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero y lineal pasan siempre."),
+        ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
+        ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos."),
+        ("FREC", f"Días entre despachos: {frec}."),
+        ("Min · regla A", "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)."),
+        ("Min · regla B", f"Si el producto es apto, la Exhi cubre menos de {p.umbral_dg_exhi:g} días y CONSUMO DIA x FREC > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)."),
+        ("Min · regla C", "Cualquier otro caso (la mayoría): Min = Exhi."),
+        ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
+                f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
+        ("Hoja REVISAR", f"Solo casos extremos: inventario físico negativo (ALTA); consumo diario >= {p.factor_consumo_exhi:g} veces la Exhibición (ALTA); "
+                         f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); y sobre stock por cubrir la exhibición (BAJA, informativo)."),
+        ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
+                                    f"venderlo o no tuvo consumo) o de PVP >= {p.pvp_alto:g}; aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
+                                    f"y el mismo SKU ya subempacado en al menos {p.min_locales_con_sub} locales. Nunca {', '.join(p.familias_no_subempacar) or '(ninguna familia)'}."),
+        ("Columnas de control", "% PROM/EXHI = promedio diario / Exhibición; COBERTURA TDF = promedio x (FREC + Dias SS); % COBERTURA/EMPQ = esa cobertura / Empq_final; "
+                                "DG MIN / DGMAX = días de consumo que cubren el Min / el Max; CON>EXHI = REVISAR si el consumo diario supera el Min."),
+    ]
+
+
 def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
-                   sug: pd.DataFrame | None = None) -> None:
-    """Escribe: 'Pronóstico cero' (resultado), 'REVISAR' (casos complejos) y 'Resumen'."""
-    from openpyxl.styles import Alignment, Font, PatternFill
+                   sug: pd.DataFrame | None = None, p: "Params | None" = None) -> None:
+    """Escribe: 'Pronóstico cero' (resultado), 'REVISAR', 'SUGERIR SUBEMPAQUE' y 'Resumen' (con formato)."""
+    import math
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
+    p = p or Params()
     sug = sug if sug is not None else pd.DataFrame()
     privadas = [c for c in df.columns if isinstance(c, str) and c.startswith("_")]
     res = df.drop(columns=[c for c in privadas if c in df.columns])
     res.columns = [c.strftime("%Y-%m-%d") if isinstance(c, (dt.datetime, pd.Timestamp)) else c
                    for c in res.columns]
 
-    leyenda = pd.DataFrame({
-        "Concepto": [
-            "Contexto", "Qué filas aparecen aquí", "CONSUMO DIA", "FREC EFECTIVA",
-            "Regla A del Min", "Regla B del Min", "Regla C del Min (mayoría)", "Max", "SUBEMPAQUE",
-            "Hoja REVISAR", "Hoja SUGERIR SUBEMPAQUE", "Diagnóstico del pronóstico"],
-        "Descripción": [
-            "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de este archivo son las que conviene pasar a método Min/Max, "
-            "donde se usan los Min y Max configurados por local y estadístico en lugar del forecast",
-            "Pasa a Min/Max si: (1) pronóstico cero o sin pronóstico, (2) pronóstico lineal (UNICOS <= 5), o (3 y 4 JUNTAS) el promedio diario del pronóstico "
-            "es menor al 55 % de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el 50 % del Empq_final. Si cumple la 3 pero el forecast cubre la mitad "
-            "del empaque final, se queda en TDF. Cero y lineal pasan siempre. La columna MOTIVO MIN/MAX indica cuál aplicó. Lo demás se queda en TDF y no aparece aquí",
-            "CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / días del mes transcurridos (parámetro)",
-            "Días entre despachos. Por defecto es FREC ENTRE DESP del BI; opcionalmente el mayor intervalo real según LUNES..DOMINGO",
-            "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)",
-            "Si APTO=Si, Exhi/CONSUMO DIA < 2 días y consumo x FREC > Exhi: Min = ROUND(consumo x FREC; 0)",
-            "Min = Exhi",
-            "SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE; si no: Max = Min + ROUND(EMPAQUE/2; 0) (con ROQ < EMPAQUE/2 el sistema no despacha). Opcional: cobertura de N días en múltiplos de ese incremento",
-            "Se respeta el SUBEMPAQUE del BI (el real del sistema); el Max nunca asume un subempaque que no existe",
-            "SOLO casos extremos: (1) inventario físico negativo (ALTA); (2) consumo diario >= 3 veces la Exhibición (ALTA); "
-            "(3) sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días, salvo que la Exhibición cubra >= 80 % de esos días (stock ligado a la exhibición) (MEDIA); "
-            "(4) 'Sobrestock por cubrir exhibición' (BAJA, informativo): el sobre stock se debe a llenar la exhibición (la Exhi sola cubre > 120 días, o cubre >= 80 % de los días del Max); "
-            "se separa en consumo <= 0.5 u/día y consumo > 0.5 u/día. "
-            "No se listan advertencias operativas normales",
-            "Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de 30 días en venderlo o no tuvo consumo) "
-            "o que son de PVP alto, siempre que sean aptos (maestro de productos: 'Apto para PTL' = Si) y el mismo SKU ya esté subempacado "
-            "en al menos N locales. Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. "
-            "Es una propuesta de cambio de maestro; muestra el Max resultante",
-            "PROMEDIO PRONOSTICO DIA = TOTAL PRONOSTICO / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; % PROM/EXHI = promedio diario del pronóstico / Exhibición; COBERTURA TDF = promedio x (FREC + Dias SS); % COBERTURA/EMPQ = esa cobertura / Empq_final (< 50 % y % PROM/EXHI < 55 % = pasa a Min/Max)"],
-    })
-    rs = pd.DataFrame(list(resumen.items()), columns=["Indicador", "Valor"])
+    # Paleta
+    ROJO, ROJO_OSC, ROJO_CLARO, ROSA = "E30613", "A30410", "FDECEC", "F9C9CD"
+    GRIS_OSC, GRIS_CLARO, BLANCO = "2B2B2B", "F4F4F4", "FFFFFF"
+    f_rojo = PatternFill("solid", fgColor=ROJO)
+    f_gris = PatternFill("solid", fgColor=GRIS_OSC)
+    f_min = PatternFill("solid", fgColor=ROJO_CLARO)
+    f_max = PatternFill("solid", fgColor=ROSA)
+    lado = Side(style="thin", color="E3C4C6")
+    borde = Border(bottom=lado)
 
     with pd.ExcelWriter(destino, engine="openpyxl") as w:
         res.to_excel(w, index=False, sheet_name="Pronóstico cero")
         rev.to_excel(w, index=False, sheet_name="REVISAR")
         if len(sug):
             sug.to_excel(w, index=False, sheet_name="SUGERIR SUBEMPAQUE")
-        rs.to_excel(w, index=False, sheet_name="Resumen")
-        leyenda.to_excel(w, index=False, sheet_name="Resumen", startrow=len(rs) + 3)
+        wr = w.book.create_sheet("Resumen")
 
-        hdr_fill = PatternFill("solid", fgColor="1F3864")
-        hojas = [("Pronóstico cero", res), ("REVISAR", rev)] + ([("SUGERIR SUBEMPAQUE", sug)] if len(sug) else [])
-        for nombre, d in hojas:
+        # ---------------- Hojas de datos ----------------
+        hojas = [("Pronóstico cero", res, ROJO), ("REVISAR", rev, "ED7D31")] + \
+                ([("SUGERIR SUBEMPAQUE", sug, "2F75B5")] if len(sug) else [])
+        destacar_min = {"Min"}
+        destacar_max = {"Max", "MAX ACTUAL", "MAX CON SUB"}
+        ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA",
+               "FREC ENTRE DESP", "Físico", "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
+        pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
+        dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION",
+               "CONSUMO DIA", "%", "PROMEDIO PRONOSTICO DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO",
+               "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)", "PVP", "REDUCCION VALOR",
+               "TOTAL PRONOSTICO"}
+        for nombre, d, color_tab in hojas:
             ws = w.sheets[nombre]
+            ws.sheet_properties.tabColor = color_tab
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions
+            ws.row_dimensions[1].height = 34
+            ws.sheet_view.zoomScale = 90
+            n = len(d)
             for i, col in enumerate(d.columns, 1):
+                es_min, es_max = col in destacar_min, col in destacar_max
                 c = ws.cell(row=1, column=i)
-                c.font = Font(bold=True, color="FFFFFF", name="Arial")
-                c.fill = hdr_fill
-                c.alignment = Alignment(wrap_text=True, vertical="center")
+                c.font = Font(bold=True, color=BLANCO, name="Arial", size=10)
+                c.fill = f_rojo if (es_min or es_max) else f_gris
+                c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
                 ancho = 70 if col == "MOTIVOS DE REVISIÓN" else min(max(len(str(col)) + 2, 10), 40)
                 if col == "DESCRIPCION":
                     ancho = 42
+                if col == "MOTIVO MIN/MAX":
+                    ancho = 48
+                if es_min or es_max:
+                    ancho = max(ancho, 12)
                 ws.column_dimensions[get_column_letter(i)].width = ancho
-        # formato numérico: enteros sin decimales, coberturas con 1 decimal
-        ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE",
-               "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA", "FREC ENTRE DESP", "Físico",
-               "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
-        pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
-        dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PROMEDIO PRONOSTICO DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
-               "PVP", "REDUCCION VALOR"}
-        for nombre, d in hojas:
-            ws_ = w.sheets[nombre]
-            for i, col in enumerate(d.columns, 1):
                 fmt = "0" if col in ent else ("0.0" if col in dec else ("0%" if col in pct else None))
-                if fmt:
-                    for r in range(2, len(d) + 2):
-                        ws_.cell(row=r, column=i).number_format = fmt
+                if fmt or es_min or es_max:
+                    for r in range(2, n + 2):
+                        cel = ws.cell(row=r, column=i)
+                        if fmt:
+                            cel.number_format = fmt
+                        if es_min or es_max:
+                            cel.fill = f_min if es_min else f_max
+                            cel.font = Font(bold=True, name="Arial", color=ROJO_OSC)
+                            cel.alignment = Alignment(horizontal="center")
+                if str(col) in ("CON>EXHI", "DG EXHI = DG MIN") and n:
+                    rango = f"{get_column_letter(i)}2:{get_column_letter(i)}{n + 1}"
+                    ws.conditional_formatting.add(rango, CellIsRule(
+                        operator="equal", formula=['"REVISAR"'],
+                        font=Font(bold=True, color="9C0006"), fill=PatternFill("solid", bgColor="FFC7CE")))
+
         ws = w.sheets["REVISAR"]
         alta = PatternFill("solid", fgColor="F8CBAD")
         media = PatternFill("solid", fgColor="FFF2CC")
         baja = PatternFill("solid", fgColor="DDEBF7")
         for r in range(2, len(rev) + 2):
-            ws.cell(row=r, column=1).fill = (alta if "ALTA" in str(ws.cell(row=r, column=1).value)
-                                                  else baja if "BAJA" in str(ws.cell(row=r, column=1).value) else media)
-        resaltar = [i for i, c in enumerate(rev.columns, 1) if c in ("Min", "Max")]
-        for r in range(2, len(rev) + 2):
-            for i in resaltar:
-                ws.cell(row=r, column=i).font = Font(bold=True, name="Arial")
-        wr = w.sheets["Resumen"]
-        wr.column_dimensions["A"].width = 34
-        wr.column_dimensions["B"].width = 110
+            v = str(ws.cell(row=r, column=1).value)
+            ws.cell(row=r, column=1).fill = alta if "ALTA" in v else baja if "BAJA" in v else media
+            ws.cell(row=r, column=1).font = Font(bold=True, name="Arial")
+
+        # ---------------- Hoja Resumen ----------------
+        wr.sheet_properties.tabColor = GRIS_OSC
+        wr.sheet_view.showGridLines = False
+        wr.column_dimensions["A"].width = 2
+        for col in "BCDEFG":
+            wr.column_dimensions[col].width = 19
+        wr.column_dimensions["H"].width = 2
+
+        n_in, n_mm = resumen["filas_bi"], resumen["filas_resultado"]
+        n_tdf = n_in - n_mm
+        est_mm = int(df["ESTADISTICO"].nunique())
+        loc_mm = int(df["Local"].nunique()) if "Local" in df else 0
+        fila = [1]
+
+        def celda(r, c, v=None, font=None, fill=None, fmt=None, al=None, border=None):
+            x = wr.cell(row=r, column=c)
+            if v is not None:
+                x.value = v
+            if font: x.font = font
+            if fill: x.fill = fill
+            if fmt: x.number_format = fmt
+            if al: x.alignment = al
+            if border: x.border = border
+            return x
+
+        def unir(r, c1, c2, r2=None):
+            wr.merge_cells(start_row=r, start_column=c1, end_row=r2 or r, end_column=c2)
+
+        # Banner
+        for r in (1, 2, 3):
+            for c in range(2, 8):
+                celda(r, c, fill=f_rojo if r < 3 else PatternFill("solid", fgColor=ROJO_OSC))
+        unir(1, 2, 7); unir(2, 2, 7); unir(3, 2, 7)
+        celda(1, 2, "RESUMEN DEL PROCESO · MIN / MAX", Font(bold=True, size=18, color=BLANCO, name="Arial"),
+              al=Alignment(vertical="center", indent=1))
+        celda(2, 2, "Qué cambió de método (TDF → Min/Max), cómo se clasificó y qué revisar",
+              Font(size=11, color="FFE5E7", name="Arial"), al=Alignment(vertical="center", indent=1))
+        fecha = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
+        celda(3, 2, f"Generado: {fecha}   ·   Días de consumo transcurridos: {p.dias_transcurridos}   ·   "
+                    f"Días de pronóstico en el BI: {resumen['dias_de_pronostico']}",
+              Font(size=9, color=BLANCO, name="Arial"), al=Alignment(vertical="center", indent=1))
+        wr.row_dimensions[1].height = 34
+        wr.row_dimensions[2].height = 20
+        fila[0] = 5
+
+        # Tarjetas KPI (3 por fila, cada una ocupa 2 columnas)
+        def tarjetas(items):
+            r = fila[0]
+            for k, (etq, val, fmt) in enumerate(items):
+                c1 = 2 + 2 * k
+                for rr in (r, r + 1):
+                    for cc in (c1, c1 + 1):
+                        celda(rr, cc, fill=PatternFill("solid", fgColor=ROJO_CLARO),
+                              border=Border(left=Side(style="thick", color=ROJO) if cc == c1 else None))
+                unir(r, c1, c1 + 1); unir(r + 1, c1, c1 + 1)
+                celda(r, c1, etq, Font(size=9, bold=True, color="6B6B6B", name="Arial"),
+                      al=Alignment(indent=1, vertical="center"))
+                celda(r + 1, c1, val, Font(size=20, bold=True, color=ROJO, name="Arial"), fmt=fmt,
+                      al=Alignment(indent=1, vertical="center", horizontal="left"))
+            wr.row_dimensions[r].height = 18
+            wr.row_dimensions[r + 1].height = 30
+            fila[0] = r + 3
+
+        tarjetas([("FILAS DEL BI (Local x Estadístico)", n_in, "#,##0"),
+                  ("PASAN A MIN/MAX", n_mm, "#,##0"),
+                  ("SE QUEDAN EN TDF", n_tdf, "#,##0")])
+        tarjetas([("% DEL BI QUE CAMBIA DE MÉTODO", n_mm / n_in if n_in else 0, "0.0%"),
+                  ("ESTADÍSTICOS DISTINTOS EN MIN/MAX", est_mm, "#,##0"),
+                  ("LOCALES CON CAMBIOS", loc_mm, "#,##0")])
+
+        def titulo(txt):
+            r = fila[0]
+            for c in range(2, 8):
+                celda(r, c, border=Border(bottom=Side(style="medium", color=ROJO)))
+            unir(r, 2, 7)
+            celda(r, 2, txt, Font(bold=True, size=13, color=GRIS_OSC, name="Arial"),
+                  border=Border(bottom=Side(style="medium", color=ROJO)))
+            wr.row_dimensions[r].height = 22
+            fila[0] = r + 1
+
+        def tabla(heads, filas, fmts=None):
+            """heads: ['Concepto', 'Filas', ...] (máx. 4). Concepto ocupa B:D; los valores E, F, G."""
+            r = fila[0]
+            fmts = fmts or ["#,##0", "#,##0", "0.0%"]
+            for c in range(2, 8):
+                celda(r, c, fill=f_gris)
+            unir(r, 2, 4)
+            celda(r, 2, heads[0], Font(bold=True, color=BLANCO, name="Arial", size=10), al=Alignment(indent=1))
+            for k, h in enumerate(heads[1:]):
+                celda(r, 5 + k, h, Font(bold=True, color=BLANCO, name="Arial", size=10),
+                      al=Alignment(horizontal="center", wrap_text=True, vertical="center"))
+            wr.row_dimensions[r].height = 26
+            for j, fl in enumerate(filas):
+                rr = r + 1 + j
+                fondo = PatternFill("solid", fgColor=GRIS_CLARO if j % 2 else BLANCO)
+                for c in range(2, 8):
+                    celda(rr, c, fill=fondo, border=borde)
+                unir(rr, 2, 4)
+                celda(rr, 2, fl[0], Font(name="Arial", size=10), al=Alignment(indent=1, wrap_text=True, vertical="center"))
+                for k, v in enumerate(fl[1:]):
+                    celda(rr, 5 + k, v, Font(name="Arial", size=10, bold=(k == 0)),
+                          fmt=fmts[k] if isinstance(v, (int, float, np.integer, np.floating)) else None,
+                          al=Alignment(horizontal="center", vertical="center"))
+                largo = len(str(fl[0]))
+                wr.row_dimensions[rr].height = 16 if largo <= 52 else 16 * math.ceil(largo / 52)
+            fila[0] = r + len(filas) + 2
+
+        def por_grupo(serie_grupo, df_base, orden=None, nombres=None):
+            tot = len(df_base) or 1
+            filas = []
+            g = df_base.groupby(serie_grupo, dropna=False)
+            claves = list(orden) if orden else list(g.groups.keys())
+            for k in claves:
+                if k not in g.groups:
+                    continue
+                sub = df_base.loc[g.groups[k]]
+                filas.append(((nombres or {}).get(k, str(k)), len(sub), int(sub["ESTADISTICO"].nunique()), len(sub) / tot))
+            return filas
+
+        # 1) Qué cambió
+        titulo("1. Cambio de método: de dónde partimos y a dónde llegamos")
+        seg = [
+            ("Pronóstico cero o sin pronóstico", resumen["segmento_1_pasa_pronostico_cero"], "Min/Max"),
+            (f"Pronóstico lineal (UNICOS <= {p.umbral_unicos})", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
+            (f"Promedio < {p.factor_prom_exhi:.0%} de la Exhi y cobertura < {p.pct_empaque_cobertura:.0%} del empaque (reglas 3 y 4)",
+             resumen["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], "Min/Max"),
+            (f"Promedio bajo, pero el forecast cubre {p.pct_empaque_cobertura:.0%} del empaque", resumen["segmento_4_tdf_rescatado_por_cobertura_empaque"], "TDF"),
+            ("Pronóstico normal", resumen["segmento_5_tdf_pronostico_normal"], "TDF"),
+        ]
+        filas = [("Total BI · todo viene en TDF", n_in, 1.0, "TDF")]
+        filas += [(a, b, b / n_in if n_in else 0, c) for a, b, c in seg]
+        filas += [("RESULTADO · se quedan en TDF", n_tdf, n_tdf / n_in if n_in else 0, "TDF"),
+                  ("RESULTADO · pasan a Min/Max", n_mm, n_mm / n_in if n_in else 0, "Min/Max")]
+        tabla(["Segmento", "Filas", "% del BI", "Método final"], filas, ["#,##0", "0.0%"])
+
+        # 2) Clasificación por motivo
+        titulo("2. Clasificación de lo que pasa a Min/Max (por motivo)")
+        if "MOTIVO MIN/MAX" in df:
+            tabla(["Motivo del cambio", "Filas", "Estadísticos distintos", "% de los que pasan"],
+                  por_grupo("MOTIVO MIN/MAX", df) + [("TOTAL", n_mm, est_mm, 1.0)])
+
+        # 3) Regla del Min
+        titulo("3. Cómo quedó el Min (regla aplicada)")
+        if "_regla_min" in df:
+            nombres_min = {"A": "A · consumo diario > Exhi → Min = ROUND(consumo x FREC)",
+                           "B": "B · Exhi cubre poco y consumo x FREC > Exhi → Min = ROUND(consumo x FREC)",
+                           "C": "C · Min = Exhi (la exhibición)"}
+            claves = {str(k)[:1]: k for k in df["_regla_min"].dropna().unique()}
+            filas = por_grupo("_regla_min", df, orden=[claves[k] for k in "ABC" if k in claves],
+                              nombres={claves[k]: nombres_min[k] for k in claves if k in nombres_min})
+            tabla(["Regla del Min", "Filas", "Estadísticos distintos", "% de los que pasan"], filas)
+
+        # 4) Regla del Max
+        titulo("4. Cómo quedó el Max")
+        sub_si = df[df["SUBEMPAQUE"] > 0]
+        sub_no = df[~(df["SUBEMPAQUE"] > 0)]
+        filas = [("Con SUBEMPAQUE → Max = Min + SUBEMPAQUE", len(sub_si), int(sub_si["ESTADISTICO"].nunique()), len(sub_si) / (n_mm or 1)),
+                 ("Sin subempaque → Max = Min + ROUND(EMPAQUE / 2)", len(sub_no), int(sub_no["ESTADISTICO"].nunique()), len(sub_no) / (n_mm or 1))]
+        if resumen.get("max_por_cobertura"):
+            filas.append(("Max ampliado por cobertura adicional de días", resumen["max_por_cobertura"], None, resumen["max_por_cobertura"] / (n_mm or 1)))
+        tabla(["Regla del Max", "Filas", "Estadísticos distintos", "% de los que pasan"], filas)
+
+        # 5) Unidades
+        titulo("5. Unidades configuradas")
+        s_min, s_max, s_exhi = int(df["Min"].sum()), int(df["Max"].sum()), int(pd.to_numeric(df["Exhi"], errors="coerce").fillna(0).sum())
+        tabla(["Concepto", "Unidades"], [
+            ("Suma de la Exhibición de las filas que pasan", s_exhi),
+            ("Suma de los Min", s_min),
+            ("Suma de los Max", s_max),
+            ("Diferencia Max − Min (colchón de reposición)", s_max - s_min),
+            ("Filas con Min por encima de la Exhi (reglas A y B)", int((df["Min"] > pd.to_numeric(df["Exhi"], errors="coerce").fillna(0)).sum())),
+        ], ["#,##0"])
+
+        # 6) REVISAR
+        titulo("6. Casos para revisar (hoja REVISAR)")
+        if len(rev):
+            orden = ["Prioridad ALTA", "Prioridad MEDIA", "Prioridad BAJA"]
+            tot_r = len(rev)
+            filas = []
+            for k in orden:
+                s = rev[rev["PRIORIDAD"] == k]
+                if len(s):
+                    filas.append((k, len(s), int(s["ESTADISTICO"].nunique()), len(s) / tot_r))
+            filas.append(("TOTAL", tot_r, int(rev["ESTADISTICO"].nunique()), 1.0))
+            tabla(["Prioridad", "Filas", "Estadísticos distintos", "% del total"], filas)
+        else:
+            tabla(["Prioridad", "Filas"], [("Sin casos para revisar", 0)])
+
+        # 7) Subempaque
+        titulo("7. Sugerencias de subempaque (hoja SUGERIR SUBEMPAQUE)")
+        if len(sug):
+            filas = []
+            for k in ["Prioridad ALTA", "Prioridad MEDIA", "Prioridad BAJA"]:
+                s = sug[sug["PRIORIDAD"] == k]
+                if len(s):
+                    filas.append((k, len(s), int(s["ESTADISTICO"].nunique()), len(s) / len(sug)))
+            filas.append(("TOTAL", len(sug), int(sug["ESTADISTICO"].nunique()), 1.0))
+            if "REDUCCION MAX" in sug:
+                filas.append(("Unidades de Max que se evitarían", int(pd.to_numeric(sug["REDUCCION MAX"], errors="coerce").fillna(0).sum()), None, None))
+            tabla(["Prioridad", "Filas", "Estadísticos distintos", "% del total"], filas)
+        else:
+            tabla(["Prioridad", "Filas"], [("Sin sugerencias con los parámetros actuales", 0)])
+
+        # 8) Top locales / familias
+        titulo("8. Dónde se concentran los cambios")
+        if "Local" in df:
+            top = df.groupby("Local").agg(f=("ESTADISTICO", "size"), e=("ESTADISTICO", "nunique")).sort_values("f", ascending=False).head(10)
+            tabla(["Top 10 locales", "Filas", "Estadísticos distintos", "% de los que pasan"],
+                  [(f"Local {k}", int(v.f), int(v.e), v.f / (n_mm or 1)) for k, v in top.iterrows()])
+        if "FAMILIA" in df:
+            top = df.groupby("FAMILIA").agg(f=("ESTADISTICO", "size"), e=("ESTADISTICO", "nunique")).sort_values("f", ascending=False).head(10)
+            tabla(["Top 10 familias", "Filas", "Estadísticos distintos", "% de los que pasan"],
+                  [(str(k), int(v.f), int(v.e), v.f / (n_mm or 1)) for k, v in top.iterrows()])
+
+        # 9) Diagnóstico / avisos
+        titulo("9. Diagnóstico del pronóstico y avisos")
+        tabla(["Indicador (sobre las filas que pasan)", "Filas"], [
+            ("Pronóstico insuficiente (promedio < %g u/día)" % p.umbral_venta_prom_dia, resumen["pronostico_insuficiente"]),
+            ("Pronóstico con valores repetidos", resumen["pronostico_valores_repetidos"]),
+            ("Pronóstico del ciclo mayor que la Exhi", resumen["pronostico_ciclo_mayor_exhi"]),
+            ("Frecuencia efectiva mayor que la del BI", resumen["frec_efectiva_mayor_que_bi"]),
+        ], ["#,##0"])
+        avisos = []
+        if resumen.get("posible_truncado_bi"):
+            avisos.append("El BI trae ~30.000 filas: la descarga puede estar truncada. Verifica que no falten locales o SKUs.")
+        if resumen["dias_de_pronostico"] < 12:
+            avisos.append(f"El BI trae {resumen['dias_de_pronostico']} días de pronóstico (no 12); los promedios se calculan con esos días.")
+        if resumen.get("skus_sin_dato_apto") is None:
+            avisos.append("No se cargó el maestro de productos: se asumió APTO = 'Si' para todos.")
+        elif resumen.get("skus_sin_dato_apto"):
+            avisos.append(f"{resumen['skus_sin_dato_apto']} productos no aparecen en el maestro: se trataron como APTO = 'Si'.")
+        if not avisos:
+            avisos.append("Sin avisos: no se detectaron problemas en la carga.")
+        r = fila[0]
+        for a in avisos:
+            for c in range(2, 8):
+                celda(r, c, fill=PatternFill("solid", fgColor="FFF2CC"))
+            unir(r, 2, 7)
+            celda(r, 2, "⚠ " + a, Font(name="Arial", size=10), al=Alignment(indent=1, wrap_text=True, vertical="center"))
+            wr.row_dimensions[r].height = 18 if len(a) < 110 else 32
+            r += 1
+        fila[0] = r + 1
+
+        # 10) Parámetros usados
+        titulo("10. Parámetros usados en este cálculo")
+        params = [
+            ("Días de consumo transcurridos", p.dias_transcurridos),
+            ("Regla 3 · promedio < % de la Exhibición", f"{p.factor_prom_exhi:.0%}"),
+            ("Regla 4 · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
+            ("Pronóstico lineal: UNICOS <=", p.umbral_unicos),
+            ("Exhibición cubre menos de (días)", p.umbral_dg_exhi),
+            ("Usar el mayor intervalo real entre despachos", "Sí" if p.usar_frec_efectiva else "No"),
+            ("Cobertura adicional del Max (días)", p.dias_cobertura_max),
+            ("Sobre stock crítico: Max cubre más de (días)", p.sobrestock_dias),
+            ("Incongruencia: consumo >= (veces la Exhibición)", p.factor_consumo_exhi),
+            ("Subempaque · días para vender un empaque completo >", p.sub_dias_venta_empaque),
+            ("Subempaque · PVP alto >=", p.pvp_alto),
+            ("Subempaque · exigir producto apto", "Sí" if p.exigir_apto_subempaque else "No"),
+            ("Subempaque · EMPAQUE >=", p.min_empaque_sugerir_sub),
+            ("Subempaque · SKU subempacado en al menos N locales", p.min_locales_con_sub),
+            ("Familias que nunca se subempacan", ", ".join(p.familias_no_subempacar) or "—"),
+        ]
+        r = fila[0]
+        for c in range(2, 8):
+            celda(r, c, fill=f_gris)
+        unir(r, 2, 5); unir(r, 6, 7)
+        celda(r, 2, "Parámetro", Font(bold=True, color=BLANCO, name="Arial", size=10), al=Alignment(indent=1))
+        celda(r, 6, "Valor", Font(bold=True, color=BLANCO, name="Arial", size=10), al=Alignment(horizontal="center"))
+        for j, (k, v) in enumerate(params):
+            rr = r + 1 + j
+            fondo = PatternFill("solid", fgColor=GRIS_CLARO if j % 2 else BLANCO)
+            for c in range(2, 8):
+                celda(rr, c, fill=fondo, border=borde)
+            unir(rr, 2, 5); unir(rr, 6, 7)
+            celda(rr, 2, k, Font(name="Arial", size=10), al=Alignment(indent=1))
+            celda(rr, 6, v, Font(name="Arial", size=10, bold=True), al=Alignment(horizontal="center", wrap_text=True),
+                  fmt="General")
+        fila[0] = r + len(params) + 2
+
+        # 11) Reglas
+        titulo("11. Reglas que se aplicaron")
+        r = fila[0]
+        for j, (k, v) in enumerate(_leyenda(p)):
+            rr = r + j
+            fondo = PatternFill("solid", fgColor=GRIS_CLARO if j % 2 else BLANCO)
+            for c in range(2, 8):
+                celda(rr, c, fill=fondo, border=borde)
+            unir(rr, 2, 3); unir(rr, 4, 7)
+            celda(rr, 2, k, Font(name="Arial", size=10, bold=True, color=ROJO_OSC), al=Alignment(indent=1, vertical="top", wrap_text=True))
+            celda(rr, 4, v, Font(name="Arial", size=10), al=Alignment(wrap_text=True, vertical="top"))
+            wr.row_dimensions[rr].height = 15 * max(1, math.ceil(len(v) / 78)) + 4
