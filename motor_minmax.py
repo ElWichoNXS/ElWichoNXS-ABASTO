@@ -37,7 +37,7 @@ class Params:
     # --- Hoja REVISAR (solo casos extremos) ---
     sobrestock_dias: float = 120.0       # sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días
     factor_consumo_exhi: float = 3.0     # incongruencia severa: CONSUMO DIA >= 3 x Exhi
-    consumo_bajo_exhi: float = 0.5       # consumo diario < 0.5 y solo la Exhi ya supera sobrestock_dias -> "Sobrestock por exhibición"
+    consumo_bajo_exhi: float = 0.5       # corte para separar "Sobrestock por cubrir exhibición" en consumo <= 0.5 y > 0.5 u/día
     pct_exhi_en_cobertura: float = 0.8   # no es sobre stock si la Exhi explica >= 80 % de los días de cobertura del Max
     # --- Sugerencias de subempaque (el Max usa SIEMPRE el SUBEMPAQUE real del BI) ---
     min_empaque_sugerir_sub: int = 6     # solo se sugiere subempacar si EMPAQUE >= 6
@@ -414,9 +414,14 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     df["COBERTURA EXHI (DIAS)"] = exhi / R.where(R > 0)           # días que cubre la exhibición
     # Sobre stock ligado a la exhibición (la Exhi cubre casi los mismos días que el Max) es normal: no se revisa.
     exhi_explica = df["COBERTURA EXHI (DIAS)"] >= p.pct_exhi_en_cobertura * df["COBERTURA MAX (DIAS)"]
-    # Consumo bajo (< 0.5/día) y la sola exhibición ya cubre más de sobrestock_dias: se muestra con leyenda aparte.
-    sobre_exhi = (R > 0) & (R < p.consumo_bajo_exhi) & (df["COBERTURA EXHI (DIAS)"] > p.sobrestock_dias)
-    sobrestock = (df["COBERTURA MAX (DIAS)"] > p.sobrestock_dias) & ~exhi_explica.fillna(False) & ~sobre_exhi
+    # Sobrestock por cubrir la exhibición: la exhibición sola supera sobrestock_dias, o explica >= pct_exhi_en_cobertura
+    # de los días del Max. Se separa por consumo diario: <= 0.5 u/día y > 0.5 u/día.
+    cob_exhi = df["COBERTURA EXHI (DIAS)"]
+    sobre_exhi = (R > 0) & ((cob_exhi > p.sobrestock_dias) |
+                            ((df["COBERTURA MAX (DIAS)"] > p.sobrestock_dias) & exhi_explica.fillna(False)))
+    sobre_exhi_bajo = sobre_exhi & (R <= p.consumo_bajo_exhi)
+    sobre_exhi_alto = sobre_exhi & (R > p.consumo_bajo_exhi)
+    sobrestock = (df["COBERTURA MAX (DIAS)"] > p.sobrestock_dias) & ~sobre_exhi
     inv_neg = inv < 0
     incongruencia = (R > 0) & (R >= p.factor_consumo_exhi * exhi)
 
@@ -424,7 +429,8 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
         ("Prioridad ALTA", "Inventario Físico Negativo", inv_neg),
         ("Prioridad ALTA", "Consumo diario triplica la Exhibición", incongruencia),
         ("Prioridad MEDIA", f"Sobre stock: Cobertura > {p.sobrestock_dias:g} días", sobrestock),
-        ("Prioridad BAJA", "Sobrestock por exhibición", sobre_exhi),
+        ("Prioridad BAJA", f"Sobrestock por cubrir exhibición (consumo <= {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_bajo),
+        ("Prioridad BAJA", f"Sobrestock por cubrir exhibición (consumo > {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_alto),
     ]
     motivos = pd.Series("", index=df.index, dtype=object)
     prio = pd.Series("", index=df.index, dtype=object)
@@ -541,7 +547,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             "Se respeta el SUBEMPAQUE del BI (el real del sistema); el Max nunca asume un subempaque que no existe",
             "SOLO casos extremos: (1) inventario físico negativo (ALTA); (2) consumo diario >= 3 veces la Exhibición (ALTA); "
             "(3) sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días, salvo que la Exhibición cubra >= 80 % de esos días (stock ligado a la exhibición) (MEDIA); "
-            "(4) 'Sobrestock por exhibición' (BAJA, informativo): consumo diario < 0.5 y la sola Exhibición ya cubre más de 120 días. "
+            "(4) 'Sobrestock por cubrir exhibición' (BAJA, informativo): el sobre stock se debe a llenar la exhibición (la Exhi sola cubre > 120 días, o cubre >= 80 % de los días del Max); "
+            "se separa en consumo <= 0.5 u/día y consumo > 0.5 u/día. "
             "No se listan advertencias operativas normales",
             "Productos sin subempaque que cumplen PVP alto, bajo consumo o Exhi/EMPAQUE < 50 %, cuyo mismo SKU ya está subempacado en otros locales. "
             "Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. Es una propuesta de cambio de maestro; muestra el Max resultante",
