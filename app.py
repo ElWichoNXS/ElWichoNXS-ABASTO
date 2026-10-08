@@ -74,6 +74,10 @@ with st.sidebar:
         "Sobre stock crítico: cobertura del Max mayor a (días)", 1.0, 730.0, 120.0,
         help="Se envía a REVISAR si el Max cubre más de estos días de consumo (Max ÷ CONSUMO DIA). "
              "Si el producto no tiene consumo en el mes, no se marca.")
+    p.consumo_bajo_exhi = st.number_input(
+        "Sobrestock por exhibición: consumo diario menor a (u/día)", 0.05, 5.0, 0.5, step=0.05, format="%.2f",
+        help="Si el consumo diario es menor a este valor y la sola exhibición ya cubre más días que el límite de sobre stock, "
+             "el caso se muestra en REVISAR con la leyenda 'Sobrestock por exhibición' (prioridad BAJA, informativo).")
     p.pct_exhi_en_cobertura = st.number_input(
         "Sobre stock explicado por la Exhibición: Exhi cubre ≥ (% de los días del Max)", 0.1, 1.0, 0.8, step=0.05, format="%.2f",
         help="Si los días que cubre la exhibición (Exhi ÷ CONSUMO DIA) son al menos este porcentaje de los días que cubre el Max, "
@@ -320,9 +324,11 @@ with st.expander("Hojas del Excel que se descarga"):
     st.markdown(f"""
 - **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Incluye columnas de control
   (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `PRON x FREC`, `% PRON/EMPQ`, `% CONSUMO/EMPQ`).
-- **REVISAR:** **solo 3 casos extremos**; el resto de avisos operativos no se lista.
+- **REVISAR:** **solo casos extremos**; el resto de avisos operativos no se lista.
   - *Prioridad ALTA:* **Inventario Físico Negativo** (`INV NETO < 0`) y **Consumo diario triplica la Exhibición** (`CONSUMO DIA ≥ {p.factor_consumo_exhi:g} × Exhi`).
-  - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), salvo que la Exhibición cubra al menos el {p.pct_exhi_en_cobertura:.0%} de esos días (stock ligado a la exhibición, no se revisa). Los productos sin consumo no se revisan: solo se mantiene la exhibición (Min = Exhi).
+  - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), salvo que la Exhibición cubra al menos el {p.pct_exhi_en_cobertura:.0%} de esos días (stock ligado a la exhibición, no se revisa).
+  - *Prioridad BAJA (informativo):* **Sobrestock por exhibición**: consumo diario < {p.consumo_bajo_exhi:g} y la sola exhibición cubre más de {p.sobrestock_dias:g} días. El inventario está atado a llenar la exhibición.
+  - Los productos sin consumo no se revisan: solo se mantiene la exhibición (Min = Exhi).
 - **SUGERIR SUBEMPAQUE:** propuestas de cambio de maestro (ver reglas arriba).
 - **Resumen:** indicadores del proceso y esta misma leyenda de reglas.
 """)

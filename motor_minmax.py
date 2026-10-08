@@ -37,6 +37,7 @@ class Params:
     # --- Hoja REVISAR (solo casos extremos) ---
     sobrestock_dias: float = 120.0       # sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días
     factor_consumo_exhi: float = 3.0     # incongruencia severa: CONSUMO DIA >= 3 x Exhi
+    consumo_bajo_exhi: float = 0.5       # consumo diario < 0.5 y solo la Exhi ya supera sobrestock_dias -> "Sobrestock por exhibición"
     pct_exhi_en_cobertura: float = 0.8   # no es sobre stock si la Exhi explica >= 80 % de los días de cobertura del Max
     # --- Sugerencias de subempaque (el Max usa SIEMPRE el SUBEMPAQUE real del BI) ---
     min_empaque_sugerir_sub: int = 6     # solo se sugiere subempacar si EMPAQUE >= 6
@@ -413,7 +414,9 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     df["COBERTURA EXHI (DIAS)"] = exhi / R.where(R > 0)           # días que cubre la exhibición
     # Sobre stock ligado a la exhibición (la Exhi cubre casi los mismos días que el Max) es normal: no se revisa.
     exhi_explica = df["COBERTURA EXHI (DIAS)"] >= p.pct_exhi_en_cobertura * df["COBERTURA MAX (DIAS)"]
-    sobrestock = (df["COBERTURA MAX (DIAS)"] > p.sobrestock_dias) & ~exhi_explica.fillna(False)
+    # Consumo bajo (< 0.5/día) y la sola exhibición ya cubre más de sobrestock_dias: se muestra con leyenda aparte.
+    sobre_exhi = (R > 0) & (R < p.consumo_bajo_exhi) & (df["COBERTURA EXHI (DIAS)"] > p.sobrestock_dias)
+    sobrestock = (df["COBERTURA MAX (DIAS)"] > p.sobrestock_dias) & ~exhi_explica.fillna(False) & ~sobre_exhi
     inv_neg = inv < 0
     incongruencia = (R > 0) & (R >= p.factor_consumo_exhi * exhi)
 
@@ -421,6 +424,7 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
         ("Prioridad ALTA", "Inventario Físico Negativo", inv_neg),
         ("Prioridad ALTA", "Consumo diario triplica la Exhibición", incongruencia),
         ("Prioridad MEDIA", f"Sobre stock: Cobertura > {p.sobrestock_dias:g} días", sobrestock),
+        ("Prioridad BAJA", "Sobrestock por exhibición", sobre_exhi),
     ]
     motivos = pd.Series("", index=df.index, dtype=object)
     prio = pd.Series("", index=df.index, dtype=object)
@@ -435,7 +439,8 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     rev.insert(0, "MOTIVOS DE REVISIÓN", motivos[n > 0])
     rev.insert(0, "PRIORIDAD", prio[n > 0])
     rev.insert(2, "N° MOTIVOS", n[n > 0])
-    rev = rev.sort_values(["PRIORIDAD", "UNIDADES SOBRE MAX", "FALTANTE VS CICLO"], ascending=[True, False, False])
+    rev["_ord"] = rev["PRIORIDAD"].map({"Prioridad ALTA": 0, "Prioridad MEDIA": 1, "Prioridad BAJA": 2})
+    rev = rev.sort_values(["_ord", "UNIDADES SOBRE MAX", "FALTANTE VS CICLO"], ascending=[True, False, False]).drop(columns="_ord")
     rev["DIAS INVENTARIO"] = rev["DIAS INVENTARIO"].replace(np.inf, 9999)   # sin consumo en el mes
     cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
             "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "Empq_final", "SUBEMPAQUE", "FREC EFECTIVA",
@@ -535,7 +540,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             "SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE; si no: Max = Min + ROUND(EMPAQUE/2; 0) (con ROQ < EMPAQUE/2 el sistema no despacha). Opcional: cobertura de N días en múltiplos de ese incremento",
             "Se respeta el SUBEMPAQUE del BI (el real del sistema); el Max nunca asume un subempaque que no existe",
             "SOLO casos extremos: (1) inventario físico negativo (ALTA); (2) consumo diario >= 3 veces la Exhibición (ALTA); "
-            "(3) sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días, salvo que la Exhibición cubra >= 80 % de esos días (stock ligado a la exhibición) (MEDIA). "
+            "(3) sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días, salvo que la Exhibición cubra >= 80 % de esos días (stock ligado a la exhibición) (MEDIA); "
+            "(4) 'Sobrestock por exhibición' (BAJA, informativo): consumo diario < 0.5 y la sola Exhibición ya cubre más de 120 días. "
             "No se listan advertencias operativas normales",
             "Productos sin subempaque que cumplen PVP alto, bajo consumo o Exhi/EMPAQUE < 50 %, cuyo mismo SKU ya está subempacado en otros locales. "
             "Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. Es una propuesta de cambio de maestro; muestra el Max resultante",
@@ -583,8 +589,10 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         ws = w.sheets["REVISAR"]
         alta = PatternFill("solid", fgColor="F8CBAD")
         media = PatternFill("solid", fgColor="FFF2CC")
+        baja = PatternFill("solid", fgColor="DDEBF7")
         for r in range(2, len(rev) + 2):
-            ws.cell(row=r, column=1).fill = alta if "ALTA" in str(ws.cell(row=r, column=1).value) else media
+            ws.cell(row=r, column=1).fill = (alta if "ALTA" in str(ws.cell(row=r, column=1).value)
+                                                  else baja if "BAJA" in str(ws.cell(row=r, column=1).value) else media)
         resaltar = [i for i, c in enumerate(rev.columns, 1) if c in ("Min", "Max")]
         for r in range(2, len(rev) + 2):
             for i in resaltar:
