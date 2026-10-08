@@ -167,7 +167,7 @@ with st.sidebar:
     st.subheader("6. Hoja REVISAR · casos extremos")
     st.caption("La hoja REVISAR solo trae 3 casos: inventario negativo, consumo muy superior a la exhibición y sobre stock crítico.")
     p.sobrestock_dias = st.number_input(
-        "Sobre stock crítico: cobertura del Max mayor a (días)", 1.0, 730.0, 120.0,
+        "Sobre stock crítico: cobertura del Max mayor a (días)", 1.0, 730.0, 20.0,
         help="Se envía a REVISAR si el Max cubre más de estos días de consumo (Max ÷ CONSUMO DIA). "
              "Si el producto no tiene consumo en el mes, no se marca.")
     p.consumo_bajo_exhi = st.number_input(
@@ -186,7 +186,7 @@ with st.sidebar:
     st.caption("Se sugiere subempacar solo para evitar sobrestock: cuando enviar el empaque completo sobra, "
                "o cuando el producto es de PVP alto.")
     p.sub_dias_venta_empaque = st.number_input(
-        "Sobrestock: el local tarda más de (días) en vender un empaque completo", 1.0, 365.0, 30.0, step=1.0,
+        "Sobrestock: el local tarda más de (días) en vender un empaque completo", 1.0, 365.0, 12.0, step=1.0,
         help="Días que tarda el local en vender UN empaque completo = EMPAQUE ÷ CONSUMO DIA. Si tarda más que este número, "
              "enviar el empaque completo genera sobrestock y el producto es candidato a subempacar. "
              "Ejemplo: empaque de 12 con consumo de 0.2 u/día tarda 60 días. Si el producto no tuvo consumo en el mes, "
@@ -205,7 +205,7 @@ with st.sidebar:
         "Solo si EMPAQUE ≥ (unidades)", 1, 100, 6,
         help="Solo se sugiere subempacar productos cuyo empaque tenga al menos esta cantidad de unidades.")
     p.min_locales_con_sub = st.number_input(
-        "El SKU debe estar subempacado en al menos N locales", 1, 50, 1,
+        "El SKU debe estar subempacado en al menos N locales", 1, 50, 10,
         help="Se sugiere subempacar un producto en un local solo si el mismo SKU ya está subempacado "
              "en al menos N locales del BI (prueba de que se puede subempacar). Esa evidencia define también el "
              "valor de subempaque sugerido: el más común entre los locales donde ya está subempacado.")
