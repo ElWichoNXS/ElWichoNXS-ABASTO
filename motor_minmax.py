@@ -46,6 +46,7 @@ class Params:
     sub_dias_venta_empaque: float = 12.0 # criterio 1 (sobrestock): el local tarda > 12 días en vender UN empaque completo
     pvp_alto: float = 5.0                # criterio 2: producto de PVP alto (>= 5): también se revisa su subempaque
     exigir_apto_subempaque: bool = True  # solo se sugiere si el maestro dice 'Apto para PTL' = Si
+    exigir_pvp_alto: bool = True         # solo se sugiere si PVP >= pvp_alto (filtro obligatorio)
     familias_no_subempacar: tuple = ("CERVEZAS", "CERVEZAS SIN ALCOHOL", "AGUAS")  # nunca se subempacan
     skus_no_subempacar: tuple = ()       # ESTADISTICOS específicos que nunca se subempacan
     skus_sub_extra: tuple = ()           # SKUs que sabes subempacables aunque el BI no los muestre subempacados
@@ -464,6 +465,33 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 # HOJA "SUGERIR SUBEMPAQUE"
 # --------------------------------------------------------------------------
+def _num(serie: pd.Series) -> pd.Series:
+    """Convierte a número precios que pueden venir como texto: '1.00', '1,50', '$ 1.234,50', '1,234.50'."""
+    if pd.api.types.is_numeric_dtype(serie):
+        return pd.to_numeric(serie, errors="coerce")
+
+    def conv(v):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return np.nan
+        if isinstance(v, (int, float, np.integer, np.floating)):
+            return float(v)
+        s = re.sub(r"[^0-9,.\-]", "", str(v))
+        if not s:
+            return np.nan
+        if "," in s and "." in s:                       # el último separador es el decimal
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        elif "," in s:                                  # solo coma: decimal si hay 1-2 dígitos después
+            s = s.replace(",", ".") if len(s.split(",")[-1]) <= 2 else s.replace(",", "")
+        try:
+            return float(s)
+        except ValueError:
+            return np.nan
+    return serie.map(conv).astype(float)
+
+
 def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     """Productos SIN subempaque en un local que conviene subempacar PARA EVITAR SOBRESTOCK.
     Un producto se sugiere solo si cumple TODO lo siguiente:
@@ -492,11 +520,13 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
     dias_emp = pd.Series(np.where(R > 0, emp / R.where(R > 0), np.nan), index=df.index)   # días que tarda en venderse un empaque
     sin_consumo = R <= 0
     c_sobre = sin_consumo | (dias_emp > p.sub_dias_venta_empaque)
-    pvp = pd.to_numeric(df["PVP"], errors="coerce")
+    pvp = _num(df["PVP"])
     c_pvp = pvp >= p.pvp_alto
+    # PVP mínimo: filtro obligatorio (un producto barato no se sugiere aunque tenga sobrestock)
+    filtro_pvp = c_pvp if p.exigir_pvp_alto else pd.Series(True, index=df.index)
 
     cand = ((df["SUBEMPAQUE"] == 0) & (emp >= p.min_empaque_sugerir_sub) & (evid_bi | extra) &
-            (sub_sug > 0) & (sub_sug < inc_act) & ~prohibido & ~no_apto & (c_sobre | c_pvp))
+            (sub_sug > 0) & (sub_sug < inc_act) & ~prohibido & ~no_apto & filtro_pvp & (c_sobre | c_pvp))
     s = df[cand].copy()
     if s.empty:
         return pd.DataFrame()
@@ -521,10 +551,11 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
         for o, c, v in zip(so, sc, pv)]
     s["PRIORIDAD"] = np.where(so & pv, "Prioridad ALTA", "Prioridad MEDIA")
     s = s.rename(columns={"SUBEMPAQUE": "SUB ACTUAL", "Max": "MAX ACTUAL"})
-    cols = ["PRIORIDAD", "MOTIVO", "CD", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA",
+    s["PVP"] = pvp[cand].values
+    cols = ["PRIORIDAD", "MOTIVO", "CD", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP",
             "EMPAQUE", "SUB ACTUAL", "SUB SUGERIDO", "APTO", "EVIDENCIA", "VALORES EN OTROS LOCALES",
             "CONSUMO DIA", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "Exhi", "Min", "MAX ACTUAL", "MAX CON SUB",
-            "REDUCCION MAX", "PVP", "REDUCCION VALOR"]
+            "REDUCCION MAX", "REDUCCION VALOR"]
     s = s[[c for c in cols if c in s.columns]]
     return s.sort_values(["PRIORIDAD", "REDUCCION VALOR"], ascending=[True, False]).reset_index(drop=True)
 
@@ -554,7 +585,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("Hoja REVISAR", f"Solo casos extremos: inventario físico negativo (ALTA); consumo diario >= {p.factor_consumo_exhi:g} veces la Exhibición (ALTA); "
                          f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); y sobre stock por cubrir la exhibición (BAJA, informativo)."),
         ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
-                                    f"venderlo o no tuvo consumo) o de PVP >= {p.pvp_alto:g}; aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
+                                    f"venderlo o no tuvo consumo) o de PVP alto; {'solo con PVP >= ' + format(p.pvp_alto, 'g') + ' (filtro obligatorio); ' if p.exigir_pvp_alto else 'PVP >= ' + format(p.pvp_alto, 'g') + ' = alto; '}aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
                                     f"y el mismo SKU ya subempacado en al menos {p.min_locales_con_sub} locales. Nunca {', '.join(p.familias_no_subempacar) or '(ninguna familia)'}."),
         ("Columnas de control", "% PROM/EXHI = promedio diario / Exhibición; COBERTURA TDF = promedio x (FREC + Dias SS); % COBERTURA/EMPQ = esa cobertura / Empq_final; "
                                 "DG MIN / DGMAX = días de consumo que cubren el Min / el Max; CON>EXHI = REVISAR si el consumo diario supera el Min."),
@@ -603,8 +634,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
         dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION",
                "CONSUMO DIA", "%", "PROMEDIO PRONOSTICO DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO",
-               "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)", "PVP", "REDUCCION VALOR",
+               "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)", "REDUCCION VALOR",
                "TOTAL PRONOSTICO"}
+        dos_dec = {"PVP", "REDUCCION VALOR"}
         for nombre, d, color_tab in hojas:
             ws = w.sheets[nombre]
             ws.sheet_properties.tabColor = color_tab
@@ -627,7 +659,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                 if es_min or es_max:
                     ancho = max(ancho, 12)
                 ws.column_dimensions[get_column_letter(i)].width = ancho
-                fmt = "0" if col in ent else ("0.0" if col in dec else ("0%" if col in pct else None))
+                fmt = ("0" if col in ent else ("0.00" if col in dos_dec else ("0.0" if col in dec else ("0%" if col in pct else None))))
                 if fmt or es_min or es_max:
                     for r in range(2, n + 2):
                         cel = ws.cell(row=r, column=i)
@@ -909,6 +941,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Incongruencia: consumo >= (veces la Exhibición)", p.factor_consumo_exhi),
             ("Subempaque · días para vender un empaque completo >", p.sub_dias_venta_empaque),
             ("Subempaque · PVP alto >=", p.pvp_alto),
+            ("Subempaque · exigir PVP alto (filtro obligatorio)", "Sí" if p.exigir_pvp_alto else "No"),
             ("Subempaque · exigir producto apto", "Sí" if p.exigir_apto_subempaque else "No"),
             ("Subempaque · EMPAQUE >=", p.min_empaque_sugerir_sub),
             ("Subempaque · SKU subempacado en al menos N locales", p.min_locales_con_sub),

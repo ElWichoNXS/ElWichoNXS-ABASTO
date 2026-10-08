@@ -193,10 +193,13 @@ with st.sidebar:
              "también cuenta como sobrestock. Bajar el valor sugiere más productos.")
     p.pvp_alto = st.number_input(
         "PVP alto: precio de venta ≥", 0.0, 1000.0, 5.0, step=0.5,
-        help="Un producto se considera de PVP alto si su precio de venta al público es mayor o igual a este valor. "
-             "Los productos de PVP alto también se revisan para subempaque (aunque el empaque se venda rápido), "
-             "para no enviar stock de más con un valor alto. El valor por defecto (5.00) corresponde aproximadamente "
-             "al 10 % de productos más caros del BI.")
+        help="Precio de venta al público (columna PVP del BI) a partir del cual un producto se considera de PVP alto. "
+             "Con 'Exigir PVP alto' activado, un producto con PVP menor a este valor NUNCA se sugiere para subempaque, "
+             "aunque tenga sobrestock. Con 5.00, un producto de 1.00 queda fuera.")
+    p.exigir_pvp_alto = st.checkbox(
+        "Exigir PVP alto para sugerir subempaque", True,
+        help="Activado (recomendado): solo se sugieren productos con PVP mayor o igual al valor de arriba. "
+             "Desactivado: basta el sobrestock, y el PVP alto solo sirve como criterio adicional.")
     p.exigir_apto_subempaque = st.checkbox(
         "Exigir que el producto sea apto para subempaque", True,
         help="Un producto es apto si en el maestro de productos (archivo 2) su columna 'Apto para PTL' dice 'Si'. "
@@ -434,7 +437,7 @@ with st.expander("Reglas de sugerencia de SUBEMPAQUE"):
 3. **Hay riesgo de sobrestock**, es decir, cumple **al menos una**:
    - **Empaque completo = sobrestock:** el local tarda más de **{p.sub_dias_venta_empaque:g} días** en vender un empaque
      (`EMPAQUE ÷ CONSUMO DIA`), o el producto **no tuvo consumo** en el mes (un empaque completo quedaría parado).
-   - **PVP alto:** PVP ≥ **{p.pvp_alto:g}**. Se revisa aunque el empaque se venda rápido, para no enviar stock de más con un valor alto.
+   - **PVP alto:** PVP ≥ **{p.pvp_alto:g}**. {"Es un filtro **obligatorio**: un producto con PVP menor a ese valor nunca se sugiere, aunque tenga sobrestock. Los de PVP alto se revisan aunque el empaque se venda rápido." if p.exigir_pvp_alto else "Es un criterio adicional: se revisa aunque el empaque se venda rápido, para no enviar stock de más con un valor alto."}
 
 **Prioridad:** ALTA si cumple las dos (sobrestock y PVP alto); MEDIA si cumple solo una. La hoja ordena por el valor que se evitaría
 inmovilizar y muestra, para cada caso, los días que tardaría en venderse el empaque contra el subempaque, y cuánto bajaría el Max.
