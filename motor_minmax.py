@@ -25,7 +25,7 @@ import pandas as pd
 class Params:
     dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
     # --- Qué filas pasan de TDF a Min/Max ---
-    factor_suma_exhi: float = 1.0        # pasa a Min/Max si la SUMA del pronóstico total < 1.0 x Exhibición
+    factor_suma_exhi: float = 0.6        # pasa a Min/Max si la SUMA del pronóstico total < 60 % de la Exhibición
     umbral_unicos: int = 5               # pronóstico "lineal": UNICOS <= 5 (valores repetidos / planos = poco confiable)
     # --- Cálculo del Min ---
     umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura (regla B)
@@ -267,9 +267,10 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         "5_queda_en_TDF": int((~cond_mm).sum()),
         "total_BI": n_in,
     }
+    pct_txt = f"{p.factor_suma_exhi:.0%}"
     motivo = np.where(cero, "Pronóstico cero",
-              np.where(lineal & suma_lt_exhi, "Pronóstico lineal + suma < Exhibición",
-              np.where(suma_lt_exhi, "Suma del pronóstico < Exhibición",
+              np.where(lineal & suma_lt_exhi, f"Pronóstico lineal + suma < {pct_txt} de la Exhibición",
+              np.where(suma_lt_exhi, f"Suma del pronóstico < {pct_txt} de la Exhibición",
               np.where(lineal, "Pronóstico lineal (repetido)", ""))))
     df["MOTIVO MIN/MAX"] = motivo
     df = df[cond_mm].copy().reset_index(drop=True)
@@ -298,8 +299,9 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         [df["_sin_pronostico"], rep & insuf, rep, insuf],
         ["Sin pronóstico", "Repetido e insuficiente", "Valores repetidos", "Insuficiente (<1 u/día)"],
         default="Pronóstico normal")
-    df["SUMA < EXHI"] = np.where(df["SUMA"] < pd.to_numeric(df["Exhi"], errors="coerce").fillna(0),
-                                 "Si", "No")
+    exhi_n = pd.to_numeric(df["Exhi"], errors="coerce").fillna(0)
+    df["% SUMA/EXHI"] = df["SUMA"] / exhi_n.replace(0, np.nan)          # cuánto de la exhibición cubre el pronóstico total
+    df["SUMA < EXHI"] = np.where(df["SUMA"] < p.factor_suma_exhi * exhi_n, "Si", "No")   # cumple la condición configurada
 
     # 3) SUBEMPAQUE: se respeta el del BI (lo que el sistema realmente tiene configurado).
     #    Las propuestas de subempacar van aparte (ver sugerir_subempaque).
@@ -379,7 +381,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         if c == "Físico":
             cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
                      "FREC EFECTIVA", "PRON PROM DIA", "% CONSUMO/EMPQ",
-                     "PRON CICLO", "DIAG PRONOSTICO", "SUMA < EXHI", "MOTIVO MIN/MAX"]
+                     "PRON CICLO", "DIAG PRONOSTICO", "% SUMA/EXHI", "SUMA < EXHI", "MOTIVO MIN/MAX"]
         if c == "Exhi":
             cols += ["CON>EXHI", "DG EXHIBICION", "DG EXHI = DG MIN"]
     resto = [c for c in df.columns if c not in cols]
@@ -534,7 +536,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de este archivo son las que conviene pasar a método Min/Max, "
             "donde se usan los Min y Max configurados por local y estadístico en lugar del forecast",
             "Pasa a Min/Max el producto cuyo pronóstico NO es normal: (a) pronóstico cero o sin pronóstico, (b) pronóstico lineal: "
-            "UNICOS <= 5 (valores repetidos o planos), o (c) la SUMA del pronóstico total es menor que la Exhibición (SUMA < Exhi). "
+            "UNICOS <= 5 (valores repetidos o planos), o (c) la SUMA del pronóstico total no cubre ni el 60 % de la Exhibición (SUMA < 60 % Exhi; porcentaje configurable). "
             "La columna MOTIVO MIN/MAX indica cuál aplicó. Los pronósticos normales se quedan en TDF y no aparecen aquí",
             "CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / días del mes transcurridos (parámetro)",
             "Días entre despachos. Por defecto es FREC ENTRE DESP del BI; opcionalmente el mayor intervalo real según LUNES..DOMINGO",
@@ -550,7 +552,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             "No se listan advertencias operativas normales",
             "Productos sin subempaque que cumplen PVP alto, bajo consumo o Exhi/EMPAQUE < 50 %, cuyo mismo SKU ya está subempacado en otros locales. "
             "Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. Es una propuesta de cambio de maestro; muestra el Max resultante",
-            "PRON PROM DIA = SUMA / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; SUMA < EXHI = pronóstico no alcanza la exhibición"],
+            "PRON PROM DIA = SUMA / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; % SUMA/EXHI = qué parte de la exhibición cubre el pronóstico total; SUMA < EXHI = Si cuando ese porcentaje es menor al configurado (60 % por defecto)"],
     })
     rs = pd.DataFrame(list(resumen.items()), columns=["Indicador", "Valor"])
 
@@ -581,7 +583,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE",
                "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA", "FREC ENTRE DESP", "Físico",
                "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
-        pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE"}
+        pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% SUMA/EXHI"}
         dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
                "PVP", "REDUCCION VALOR"}
         for nombre, d in hojas:
