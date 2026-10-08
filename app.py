@@ -7,8 +7,8 @@ import io
 import pandas as pd
 import streamlit as st
 
-from motor_minmax import (Params, exportar_excel, leer_aptos, leer_bi,
-                          marcar_revision, procesar, sugerir_subempaque)
+from motor_minmax import (ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
+                          leer_bi, marcar_revision, procesar, sugerir_subempaque)
 
 st.set_page_config(page_title="Min/Max · Pronóstico cero", layout="wide")
 st.title("Min / Max por local · Pronóstico cero")
@@ -38,7 +38,7 @@ with st.sidebar:
              "hace que pasen más productos a Min/Max.")
     p.umbral_unicos = st.number_input(
         "Pronóstico repetido: UNICOS menor o igual a", 0, 12, 5,
-        help="También pasa a Min/Max el producto con pronóstico REPETIDO. UNICOS = cuántos de los 12 valores "
+        help="También pasa a Min/Max el producto con pronóstico REPETIDO. UNICOS = cuántos de los valores diarios "
              "del pronóstico aparecen una sola vez. Un número bajo significa que el forecast repite los "
              "mismos valores (la semana 2 copia a la semana 1), por lo que no es confiable para abastecer por TDF. "
              "Con 5, pasan los productos que tienen 5 o menos valores únicos.")
@@ -66,13 +66,21 @@ with st.sidebar:
     p.umbral_venta_prom_dia = st.number_input(
         "Pronóstico insuficiente si promedio diario < (u/día)", 0.0, 10.0, 1.0,
         help="Solo informativo (columna DIAG PRONOSTICO). Si el pronóstico promedio por día "
-             "(SUMA ÷ 12) es menor a este valor, se marca como 'insuficiente'.")
+             "(SUMA ÷ días de pronóstico) es menor a este valor, se marca como 'insuficiente'.")
 
-    st.subheader("6. Hoja REVISAR")
-    p.revisar_dgmax_dias = st.number_input(
-        "Cobertura del Max mayor a (días)", 1.0, 365.0, 60.0,
-        help="Marca para revisión los productos donde el Max cubre más de estos días de consumo "
-             "(posible sobre-inventario).")
+    st.subheader("6. Hoja REVISAR · casos extremos")
+    st.caption("La hoja REVISAR solo trae 3 casos: inventario negativo, consumo muy superior a la exhibición y sobre stock crítico.")
+    p.sobrestock_dias = st.number_input(
+        "Sobre stock crítico: cobertura del Max mayor a (días)", 1.0, 730.0, 120.0,
+        help="Se envía a REVISAR si el Max cubre más de estos días de consumo (Max ÷ CONSUMO DIA). "
+             "Si el producto no tiene consumo en el mes, no se marca.")
+    p.pct_exhi_en_cobertura = st.number_input(
+        "Sobre stock explicado por la Exhibición: Exhi cubre ≥ (% de los días del Max)", 0.1, 1.0, 0.8, step=0.05, format="%.2f",
+        help="Si los días que cubre la exhibición (Exhi ÷ CONSUMO DIA) son al menos este porcentaje de los días que cubre el Max, "
+             "el exceso de stock se debe a la exhibición del local y NO se envía a REVISAR. 0.80 = 80 %.")
+    p.factor_consumo_exhi = st.number_input(
+        "Incongruencia: consumo diario ≥ (veces la Exhibición)", 1.0, 20.0, 3.0, step=0.5,
+        help="Se envía a REVISAR si el CONSUMO DIA es esta cantidad de veces la Exhi o más. Con 3, el consumo diario triplica la exhibición.")
 
     st.subheader("7. Sugerencias de subempaque")
     st.caption("Se sugiere subempacar solo si cumple AL MENOS UNO de los tres criterios.")
@@ -117,15 +125,40 @@ f_ap = c2.file_uploader("2) Maestro de productos (columnas 'Estadístico' y 'Apt
                         type=["xlsx"])
 
 if f_bi:
-    with st.spinner("Procesando…"):
+    with st.spinner("Leyendo archivos…"):
         bi = leer_bi(f_bi)
         aptos = leer_aptos(f_ap) if f_ap else None
-        try:
-            salida, r = procesar(bi, aptos, p)
-        except ValueError as e:
-            st.error(str(e))
-            st.stop()
 
+    try:
+        with st.spinner("Procesando…"):
+            salida, r = procesar(bi, aptos, p)
+    except ColumnasPronosticoError as e:
+        # No se reconocieron las columnas de pronóstico: se pide elegirlas a mano
+        st.error(f"{e} Elige abajo las columnas del pronóstico diario.")
+        st.markdown("**Columnas que trae tu archivo** (las del pronóstico diario son varias seguidas, una por día; normalmente 12):")
+        todas = [c for c in e.todas]
+        etiquetas = {c: str(c) for c in todas}
+        elegidas = st.multiselect(
+            "Selecciona las columnas de pronóstico diario (entre 7 y 12), en orden",
+            options=todas, format_func=lambda c: etiquetas[c],
+            help="Son las columnas con la venta pronosticada por día (una por cada uno de los próximos días).")
+        if not (7 <= len(elegidas) <= 12):
+            st.info(f"Seleccionadas: {len(elegidas)}. Elige entre 7 y 12 columnas.")
+            st.stop()
+        try:
+            with st.spinner("Procesando…"):
+                salida, r = procesar(bi, aptos, p, cols_pronostico=elegidas)
+        except ValueError as e2:
+            st.error(str(e2))
+            st.stop()
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
+
+    if r["dias_de_pronostico"] < 12:
+        st.info(f"El BI trae **{r['dias_de_pronostico']} días de pronóstico** (no 12). "
+                f"El pronóstico promedio diario se calcula dividiendo para {r['dias_de_pronostico']}. "
+                f"Columnas usadas: {r['columnas_pronostico_usadas']}.")
     if r["posible_truncado_bi"]:
         st.warning("El BI trae ~30.000 filas: la descarga puede estar truncada. "
                    "Verifica que no falten locales/SKUs.")
@@ -133,20 +166,20 @@ if f_bi:
         st.info("Sin lista de aptos: se asumió APTO = 'Si' para todos "
                 "(afecta solo a la regla B de Min).")
 
+    rev = marcar_revision(salida, p)
+    sug = sugerir_subempaque(salida, p)
+    r.pop("filas_con_aviso_revisar", None)       # métrica vieja (DG EXHI = DG MIN), ya no se usa
+    r["sugerencias_subempaque"] = len(sug)
+    r["filas_en_hoja_REVISAR"] = len(rev)
+    r["revisar_prioridad_alta"] = int((rev["PRIORIDAD"] == "Prioridad ALTA").sum())
+
     k = st.columns(5)
     k[0].metric("Filas BI", f"{r['filas_bi']:,}")
     k[1].metric("Pasan a Min/Max", f"{r['filas_resultado']:,}")
     k[2].metric("Min = Exhi (regla C)", f"{r['regla_C']:,}")
     k[3].metric("Ajustadas (A + B)", f"{r['regla_A'] + r['regla_B']:,}")
-    k[4].metric("Para REVISAR", f"{r['filas_con_aviso_revisar']:,}")
-
-    rev = marcar_revision(salida, p)
-    sug = sugerir_subempaque(salida, p)
-    r["sugerencias_subempaque"] = len(sug)
-    r["filas_en_hoja_REVISAR"] = len(rev)
-    r["revisar_prioridad_alta"] = int((rev["PRIORIDAD"] == "Prioridad ALTA").sum())
-    st.metric("Casos en hoja REVISAR", f"{len(rev):,}",
-              f"{r['revisar_prioridad_alta']} de prioridad alta", delta_color="off")
+    k[4].metric("Casos en hoja REVISAR", f"{len(rev):,}",
+                f"{r['revisar_prioridad_alta']} de prioridad alta", delta_color="off")
 
     st.subheader("Segmentación del BI: qué se queda en TDF y qué pasa a Min/Max")
     seg = pd.DataFrame({
@@ -206,9 +239,9 @@ El cálculo es por cada combinación **Local × Estadístico**. El producto **pa
 no es confiable para abastecer, es decir, si cumple **cualquiera** de estas tres condiciones; si no cumple ninguna,
 **se queda en TDF** y no aparece en el archivo:
 
-1. **Pronóstico cero o sin pronóstico:** la suma de los 12 días es 0.
+1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0.
 2. **Pronóstico bajo:** `pronóstico promedio diario × FREC  <  {p.pct_empaque_min_max:.0%} del Empq_final`.
-3. **Pronóstico repetido:** `UNICOS ≤ {p.umbral_unicos}`. UNICOS cuenta cuántos de los 12 valores del pronóstico aparecen una sola vez;
+3. **Pronóstico repetido:** `UNICOS ≤ {p.umbral_unicos}`. UNICOS cuenta cuántos de los valores diarios del pronóstico aparecen una sola vez;
    si el forecast copia los mismos valores (semana 2 = semana 1), casi no hay valores únicos y el pronóstico no es confiable.
 
 **Importante:** las condiciones 1 y 3 aplican **aunque el producto tenga subempaque / Empq_final = 1**. Con empaque 1, TDF puede
@@ -217,7 +250,7 @@ está mal, y TDF trabajaría con un dato incorrecto; por eso pasa a Min/Max.
 
 Detalle de la condición 2:
 
-- **Pronóstico promedio diario** = suma del pronóstico de los 12 días (**SUMA**) ÷ 12.
+- **Pronóstico promedio diario** = suma del pronóstico de todos los días que trae el BI (**SUMA**, normalmente 12; si el BI trae menos, por ejemplo 11, se divide para esos días).
 - **FREC** = días entre despachos del local (**FREC ENTRE DESP** del BI{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
 - **Empq_final** = empaque con el que realmente se despacha (el SUBEMPAQUE si existe; si no, el EMPAQUE).
 
@@ -287,12 +320,9 @@ with st.expander("Hojas del Excel que se descarga"):
     st.markdown(f"""
 - **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Incluye columnas de control
   (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `PRON x FREC`, `% PRON/EMPQ`, `% CONSUMO/EMPQ`).
-- **REVISAR:** casos fuera de parámetros o complejos para revisar a mano, ordenados por prioridad (ALTA primero):
-  - *Prioridad ALTA:* **pronóstico cero o consumo real ≥ 1 empaque por ciclo** (el forecast lo manda a Min/Max, pero el consumo real
-    es alto), consumo mayor que la exhibición (regla A), sin pronóstico, inventario neto negativo, producto de temporada.
-  - *Prioridad MEDIA:* exhibición que no cubre la frecuencia de despacho, pronóstico hasta el próximo despacho mayor que la exhibición,
-    pronóstico repetido con consumo real muy superior, y cobertura del Max mayor a **{p.revisar_dgmax_dias:g} días**.
-  - Tip: la columna `% CONSUMO/EMPQ` permite filtrar a mano los productos con consumo real alto aunque no estén en esta hoja.
+- **REVISAR:** **solo 3 casos extremos**; el resto de avisos operativos no se lista.
+  - *Prioridad ALTA:* **Inventario Físico Negativo** (`INV NETO < 0`) y **Consumo diario triplica la Exhibición** (`CONSUMO DIA ≥ {p.factor_consumo_exhi:g} × Exhi`).
+  - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), salvo que la Exhibición cubra al menos el {p.pct_exhi_en_cobertura:.0%} de esos días (stock ligado a la exhibición, no se revisa). Los productos sin consumo no se revisan: solo se mantiene la exhibición (Min = Exhi).
 - **SUGERIR SUBEMPAQUE:** propuestas de cambio de maestro (ver reglas arriba).
 - **Resumen:** indicadores del proceso y esta misma leyenda de reglas.
 """)

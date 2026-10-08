@@ -12,6 +12,7 @@ Uso:
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -33,8 +34,10 @@ class Params:
     dias_cobertura_max: float = 0.0      # 0 = desactivado (Max = Min + SUBEMPAQUE o EMPAQUE/2)
     # --- Diagnóstico del pronóstico ---
     umbral_venta_prom_dia: float = 1.0   # pronóstico promedio < 1 unid/día = "insuficiente"
-    # --- Hoja REVISAR ---
-    revisar_dgmax_dias: float = 60.0     # cobertura Max > 60 días de consumo
+    # --- Hoja REVISAR (solo casos extremos) ---
+    sobrestock_dias: float = 120.0       # sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días
+    factor_consumo_exhi: float = 3.0     # incongruencia severa: CONSUMO DIA >= 3 x Exhi
+    pct_exhi_en_cobertura: float = 0.8   # no es sobre stock si la Exhi explica >= 80 % de los días de cobertura del Max
     # --- Sugerencias de subempaque (el Max usa SIEMPRE el SUBEMPAQUE real del BI) ---
     min_empaque_sugerir_sub: int = 6     # solo se sugiere subempacar si EMPAQUE >= 6
     min_locales_con_sub: int = 1         # el SKU debe estar subempacado en >= N locales del BI
@@ -126,19 +129,52 @@ def _calc_max(minimo, R, empaque, sub, p: "Params"):
     return mx, regla
 
 
+MIN_DIAS_PRON = 7     # mínimo de días de pronóstico aceptados
+MAX_DIAS_PRON = 12    # se usan como máximo los primeros 12 días
+
+
+class ColumnasPronosticoError(ValueError):
+    """No se pudieron identificar las 12 columnas de pronóstico diario."""
+    def __init__(self, mensaje, encontradas, todas):
+        super().__init__(mensaje)
+        self.encontradas = encontradas      # columnas reconocidas como fecha
+        self.todas = todas                  # todas las columnas del archivo
+
+
+_MESES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8,
+          "sep": 9, "set": 9, "oct": 10, "nov": 11, "dic": 12,
+          "jan": 1, "apr": 4, "aug": 8, "dec": 12}
+_RE_FECHA = [
+    re.compile(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}([ T].*)?$"),          # 2026-10-07 [00:00:00]
+    re.compile(r"^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}([ T].*)?$"),        # 07/10/2026
+    re.compile(r"^\d{1,2}[-/. ]([a-zA-Z]{3,10})\.?([-/. ]\d{2,4})?$"),  # 07-oct, 07-oct-26
+    re.compile(r"^([a-zA-Z]{3,10})\.?[-/. ]\d{1,2}([-/. ]\d{2,4})?$"),  # oct-07
+]
+
+
+def _es_fecha(c) -> bool:
+    """True si el encabezado representa una fecha (datetime, texto con formato de fecha o serial de Excel)."""
+    if isinstance(c, (dt.datetime, dt.date, pd.Timestamp)):
+        return True
+    if isinstance(c, (int, float, np.integer, np.floating)) and not isinstance(c, bool):
+        return 40000 <= float(c) <= 60000          # serial de Excel (años 2009-2064)
+    if isinstance(c, str):
+        t = c.strip()
+        if re.fullmatch(r"\d{5}(\.0+)?", t):         # serial de Excel guardado como texto
+            return 40000 <= float(t) <= 60000
+        for rx in _RE_FECHA:
+            m = rx.match(t)
+            if m:
+                g = m.group(1) if m.lastindex else None
+                if g is not None and rx.pattern.count("a-zA-Z") and g[:3].lower() not in _MESES:
+                    return False
+                return True
+    return False
+
+
 def _cols_fecha(df: pd.DataFrame) -> list:
     """Columnas de pronóstico diario (encabezado tipo fecha)."""
-    out = []
-    for c in df.columns:
-        if isinstance(c, (dt.datetime, dt.date, pd.Timestamp)):
-            out.append(c)
-        elif isinstance(c, str):
-            try:
-                pd.to_datetime(c, format="%Y-%m-%d")
-                out.append(c)
-            except Exception:
-                pass
-    return out
+    return [c for c in df.columns if _es_fecha(c)]
 
 
 def leer_bi(archivo) -> pd.DataFrame:
@@ -165,7 +201,7 @@ def leer_aptos(archivo) -> pd.DataFrame:
 # PROCESO PRINCIPAL
 # --------------------------------------------------------------------------
 def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
-             p: Params | None = None):
+             p: Params | None = None, cols_pronostico: list | None = None):
     p = p or Params()
     df = df_bi.copy()
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
@@ -176,10 +212,18 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     if faltan:
         raise ValueError(f"Faltan columnas en el archivo del BI: {faltan}")
 
-    fechas = _cols_fecha(df)
-    if len(fechas) < 12:
-        raise ValueError("Se esperaban 12 columnas de pronóstico diario (fechas).")
-    fechas = fechas[:12]
+    if cols_pronostico:                      # elegidas a mano por el usuario
+        fechas = [c for c in df.columns if c in set(cols_pronostico)]
+        if len(fechas) != len(cols_pronostico):
+            raise ValueError("Alguna de las columnas de pronóstico elegidas no existe en el archivo.")
+    else:
+        fechas = _cols_fecha(df)
+        if len(fechas) < MIN_DIAS_PRON:
+            raise ColumnasPronosticoError(
+                f"Se necesitan al menos {MIN_DIAS_PRON} columnas de pronóstico diario (fechas) y se reconocieron {len(fechas)}.",
+                fechas, list(df.columns))
+    fechas = fechas[:MAX_DIAS_PRON]
+    n_dias = len(fechas)          # el BI trae 12 días, o menos si el pronóstico arranca el día de la descarga
     V = df[fechas].apply(pd.to_numeric, errors="coerce").values
 
     n_in = len(df)
@@ -205,7 +249,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     sin_pron = np.all(np.isnan(V), axis=1)
 
     # Filtro TDF -> Min/Max: pronóstico promedio diario x frecuencia < X % del empaque final
-    pron_prom = suma / 12
+    pron_prom = suma / n_dias
     #   a) pronóstico cero / sin pronóstico (SUMA = 0)
     #   b) pronóstico bajo: pronóstico promedio diario x FREC < X % de Empq_final
     #   c) pronóstico repetido: UNICOS <= umbral (el forecast copia los mismos valores = poco confiable)
@@ -244,10 +288,10 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
 
     # 2b) Diagnóstico del pronóstico ---------------------------------------------
     cum = np.nancumsum(V, axis=1)
-    idx = np.clip(df["FREC EFECTIVA"].values, 1, 12) - 1
+    idx = np.clip(df["FREC EFECTIVA"].values, 1, n_dias) - 1
     df["PRON CICLO"] = np.round(cum[np.arange(len(df)), idx], 2)      # venta pronosticada hasta el próximo despacho
-    df["PRON PROM DIA"] = np.round(df["SUMA"] / 12, 2)
-    df["PRON x FREC"] = np.round(df["SUMA"] / 12 * df["FREC EFECTIVA"], 2)
+    df["PRON PROM DIA"] = np.round(df["SUMA"] / n_dias, 2)
+    df["PRON x FREC"] = np.round(df["SUMA"] / n_dias * df["FREC EFECTIVA"], 2)
     df["% PRON/EMPQ"] = df["PRON x FREC"] / df["Empq_final"]
     insuf = df["PRON PROM DIA"] < p.umbral_venta_prom_dia
     rep = df["UNICOS"] <= p.umbral_unicos
@@ -319,6 +363,8 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         "max_por_cobertura": int((df["_regla_max"] == "Cobertura (R x días objetivo)").sum()),
         "max_min_empaque_mitad": int((df["_regla_max"] == "Min + EMPAQUE/2").sum()),
         "pronostico_cero_o_sin_pronostico": int((df["SUMA"] == 0).sum()),
+        "dias_de_pronostico": n_dias,
+        "columnas_pronostico_usadas": f"{fechas[0]} ... {fechas[-1]}" if fechas else "",
         "posible_truncado_bi": n_in >= 29999,
     }
 
@@ -346,55 +392,55 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
 # HOJA "REVISAR": casos fuera de parámetros o complejos
 # --------------------------------------------------------------------------
 def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
-    """Devuelve solo las filas que conviene revisar a mano, con el motivo."""
+    """Solo CASOS EXTREMOS (3 validaciones):
+       1) Sobre stock crítico: cobertura del Max > p.sobrestock_dias días de consumo
+          (se excluye si la Exhi cubre >= p.pct_exhi_en_cobertura de esos días; sin consumo no aplica: solo se mantiene la Exhi).
+       2) Inventario físico negativo: INV NETO < 0.
+       3) Incongruencia severa: CONSUMO DIA >= p.factor_consumo_exhi x Exhi."""
     p = p or Params()
     R = df["CONSUMO DIA"]
     F = df["FREC EFECTIVA"] if "FREC EFECTIVA" in df else df["FREC ENTRE DESP"]
-    cons_pct = df["% CONSUMO/EMPQ"]
-    # El forecast manda el producto a Min/Max, pero el CONSUMO REAL por sí solo no lo mandaría
-    cons_alto = cons_pct >= p.pct_empaque_min_max
-    cons_alto_critico = cons_alto & ((df["SUMA"] == 0) | (cons_pct >= 1))
+    inv = pd.to_numeric(df["INV NETO"], errors="coerce")
+    exhi = pd.to_numeric(df["Exhi"], errors="coerce").fillna(0)
+    consumo_ciclo = R * F
+    df = df.copy()
+    df["CONSUMO CICLO"] = consumo_ciclo
+    df["DIAS INVENTARIO"] = np.where(R > 0, inv / R.where(R > 0), np.inf)
+    df["UNIDADES SOBRE MAX"] = (inv - df["Max"]).clip(lower=0)
+    df["FALTANTE VS CICLO"] = (consumo_ciclo - df["Min"]).clip(lower=0)
+    df["COBERTURA MAX (DIAS)"] = df["Max"] / R.where(R > 0)       # NaN si no hay consumo
+
+    df["COBERTURA EXHI (DIAS)"] = exhi / R.where(R > 0)           # días que cubre la exhibición
+    # Sobre stock ligado a la exhibición (la Exhi cubre casi los mismos días que el Max) es normal: no se revisa.
+    exhi_explica = df["COBERTURA EXHI (DIAS)"] >= p.pct_exhi_en_cobertura * df["COBERTURA MAX (DIAS)"]
+    sobrestock = (df["COBERTURA MAX (DIAS)"] > p.sobrestock_dias) & ~exhi_explica.fillna(False)
+    inv_neg = inv < 0
+    incongruencia = (R > 0) & (R >= p.factor_consumo_exhi * exhi)
+
     reglas = [
-        ("Prioridad ALTA", "Pronóstico cero o consumo real >= 1 empaque por ciclo: el forecast lo envía a Min/Max pero el consumo real es alto",
-         cons_alto_critico),
-        ("Prioridad ALTA", "Consumo diario > Exhibición (regla A)",
-         df["_regla_min"].str.startswith("A")),
-        ("Prioridad ALTA", "Sin pronóstico en los 12 días",
-         df["_sin_pronostico"]),
-        ("Prioridad ALTA", "Inventario neto negativo",
-         df["INV NETO"] < 0),
-        ("Prioridad ALTA", "Producto de temporada",
-         df.get("TEMPORADA", 0) > 0),
-        ("Prioridad MEDIA", "Exhibición con menos cobertura que la frecuencia de despacho (regla B / R×FREC > Exhi)",
-         (R * F > df["Exhi"]) & ~df["_regla_min"].str.startswith("A")),
-        ("Prioridad MEDIA", "Pronóstico hasta el próximo despacho > Exhibición (Min = Exhi puede quedar corto)",
-         (df["PRON CICLO"] > df["Exhi"]) & ~df["_regla_min"].str.startswith("A")),
-        ("Prioridad MEDIA", "Pronóstico con valores repetidos y consumo real > pronóstico (revisar calidad del pronóstico)",
-         df["DIAG PRONOSTICO"].isin(["Valores repetidos", "Repetido e insuficiente"]) & (R > df["PRON PROM DIA"] * 2) & (R >= 1)),
-        ("Prioridad MEDIA", f"Cobertura del Max > {p.revisar_dgmax_dias:g} días de consumo",
-         df["DGMAX"] > p.revisar_dgmax_dias),
+        ("Prioridad ALTA", "Inventario Físico Negativo", inv_neg),
+        ("Prioridad ALTA", "Consumo diario triplica la Exhibición", incongruencia),
+        ("Prioridad MEDIA", f"Sobre stock: Cobertura > {p.sobrestock_dias:g} días", sobrestock),
     ]
     motivos = pd.Series("", index=df.index, dtype=object)
     prio = pd.Series("", index=df.index, dtype=object)
     n = pd.Series(0, index=df.index)
     for pr, texto, cond in reglas:
         cond = pd.Series(cond, index=df.index).fillna(False).astype(bool)
-        motivos = np.where(cond, np.where(motivos == "", texto, motivos + " | " + texto), motivos)
-        motivos = pd.Series(motivos, index=df.index, dtype=object)
-        prio = np.where(cond & (prio != "Prioridad ALTA"), pr, prio)
-        prio = pd.Series(prio, index=df.index, dtype=object)
+        motivos = pd.Series(np.where(cond, np.where(motivos == "", texto, motivos + " | " + texto), motivos),
+                            index=df.index, dtype=object)
+        prio = pd.Series(np.where(cond & (prio != "Prioridad ALTA"), pr, prio), index=df.index, dtype=object)
         n = n + cond.astype(int)
     rev = df[n > 0].copy()
     rev.insert(0, "MOTIVOS DE REVISIÓN", motivos[n > 0])
     rev.insert(0, "PRIORIDAD", prio[n > 0])
     rev.insert(2, "N° MOTIVOS", n[n > 0])
-    rev = rev.sort_values(["PRIORIDAD", "N° MOTIVOS"], ascending=[True, False])
+    rev = rev.sort_values(["PRIORIDAD", "UNIDADES SOBRE MAX", "FALTANTE VS CICLO"], ascending=[True, False, False])
+    rev["DIAS INVENTARIO"] = rev["DIAS INVENTARIO"].replace(np.inf, 9999)   # sin consumo en el mes
     cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
-            "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "EMPAQUE", "SUBEMPAQUE", "Empq_final",
-            "FREC ENTRE DESP", "FREC EFECTIVA", "CONSUMOS ACU", "CONSUMO DIA", "Exhi",
-            "MOTIVO MIN/MAX", "Físico", "INV NETO", "FISICO_WH", "SUMA", "UNICOS", "PRON PROM DIA", "PRON x FREC",
-            "% PRON/EMPQ", "% CONSUMO/EMPQ", "PRON CICLO", "DIAG PRONOSTICO", "_regla_max",
-            "Min", "Max", "DG MIN", "DGMAX", "_regla_min"]
+            "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "Empq_final", "SUBEMPAQUE", "FREC EFECTIVA",
+            "CONSUMO DIA", "CONSUMO CICLO", "Exhi", "INV NETO", "DIAS INVENTARIO", "UNIDADES SOBRE MAX",
+            "Min", "Max", "COBERTURA EXHI (DIAS)", "COBERTURA MAX (DIAS)", "FALTANTE VS CICLO", "_regla_min", "MOTIVO MIN/MAX"]
     return rev[[c for c in cols if c in rev.columns]].reset_index(drop=True)
 
 
@@ -488,10 +534,12 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             "Min = Exhi",
             "SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE; si no: Max = Min + ROUND(EMPAQUE/2; 0) (con ROQ < EMPAQUE/2 el sistema no despacha). Opcional: cobertura de N días en múltiplos de ese incremento",
             "Se respeta el SUBEMPAQUE del BI (el real del sistema); el Max nunca asume un subempaque que no existe",
-            "Casos fuera de parámetros o complejos; revisar de arriba hacia abajo (ALTA primero). Incluye los de pronóstico bajo/cero con consumo real alto",
+            "SOLO casos extremos: (1) inventario físico negativo (ALTA); (2) consumo diario >= 3 veces la Exhibición (ALTA); "
+            "(3) sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 120 días, salvo que la Exhibición cubra >= 80 % de esos días (stock ligado a la exhibición) (MEDIA). "
+            "No se listan advertencias operativas normales",
             "Productos sin subempaque que cumplen PVP alto, bajo consumo o Exhi/EMPAQUE < 50 %, cuyo mismo SKU ya está subempacado en otros locales. "
             "Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. Es una propuesta de cambio de maestro; muestra el Max resultante",
-            "PRON PROM DIA = SUMA/12 (<1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; SUMA < EXHI = pronóstico no alcanza la exhibición"],
+            "PRON PROM DIA = SUMA / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; SUMA < EXHI = pronóstico no alcanza la exhibición"],
     })
     rs = pd.DataFrame(list(resumen.items()), columns=["Indicador", "Valor"])
 
@@ -523,7 +571,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA", "FREC ENTRE DESP", "Físico",
                "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
         pct = {"% PRON/EMPQ", "% CONSUMO/EMPQ", "% EXHI/EMPAQUE"}
-        dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON x FREC", "PRON CICLO",
+        dec = {"DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON x FREC", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
                "PVP", "REDUCCION VALOR"}
         for nombre, d in hojas:
             ws_ = w.sheets[nombre]
