@@ -247,7 +247,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     suma = np.round(np.nansum(V, axis=1), 4)          # mismo valor que se muestra en la columna SUMA
     igual = (V[:, :, None] == V[:, None, :]).sum(axis=2)     # NaN nunca es igual
     unicos = (igual == 1).sum(axis=1)
-    df["SUMA"] = np.round(suma, 4)
+    df["TOTAL PRONOSTICO"] = np.round(suma, 4)
     df["UNICOS"] = unicos
     sin_pron = np.all(np.isnan(V), axis=1)
 
@@ -301,8 +301,8 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     cum = np.nancumsum(V, axis=1)
     idx = np.clip(df["FREC EFECTIVA"].values, 1, n_dias) - 1
     df["PRON CICLO"] = np.round(cum[np.arange(len(df)), idx], 2)      # venta pronosticada hasta el próximo despacho
-    df["PRON PROM DIA"] = np.round(df["SUMA"] / n_dias, 2)
-    insuf = df["PRON PROM DIA"] < p.umbral_venta_prom_dia
+    df["PROMEDIO PRONOSTICO DIA"] = np.round(df["TOTAL PRONOSTICO"] / n_dias, 2)
+    insuf = df["PROMEDIO PRONOSTICO DIA"] < p.umbral_venta_prom_dia
     rep = df["UNICOS"] <= p.umbral_unicos
     df["DIAG PRONOSTICO"] = np.select(
         [df["_sin_pronostico"], rep & insuf, rep, insuf],
@@ -369,7 +369,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         "pronostico_ciclo_mayor_exhi": int((df["PRON CICLO"] > df["Exhi"]).sum()),
         "max_por_cobertura": int((df["_regla_max"] == "Cobertura (R x días objetivo)").sum()),
         "max_min_empaque_mitad": int((df["_regla_max"] == "Min + EMPAQUE/2").sum()),
-        "pronostico_cero_o_sin_pronostico": int((df["SUMA"] == 0).sum()),
+        "pronostico_cero_o_sin_pronostico": int((df["TOTAL PRONOSTICO"] == 0).sum()),
         "dias_de_pronostico": n_dias,
         "columnas_pronostico_usadas": f"{fechas[0]} ... {fechas[-1]}" if fechas else "",
         "posible_truncado_bi": n_in >= 29999,
@@ -379,14 +379,14 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     orden_bi = [c for c in df_bi.columns if isinstance(c, str) and c.strip() in df.columns]
     orden_bi = [c.strip() for c in orden_bi]
     calc = ["CONSUMO DIA", "APTO", "DIF", "%", "DG MIN", "DGMAX", "CON>EXHI",
-            "DG EXHIBICION", "DG EXHI = DG MIN", "SUMA", "UNICOS", "_regla_min", "_sin_pronostico"]
+            "DG EXHIBICION", "DG EXHI = DG MIN", "TOTAL PRONOSTICO", "UNICOS", "_regla_min", "_sin_pronostico"]
     base = [c for c in orden_bi if c not in ("Min", "Max") and c not in calc]
     cols = []
     for c in base:
         cols.append(c)
         if c == "Físico":
             cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
-                     "FREC EFECTIVA", "PRON PROM DIA", "% CONSUMO/EMPQ",
+                     "FREC EFECTIVA", "PROMEDIO PRONOSTICO DIA", "TOTAL PRONOSTICO", "UNICOS", "% CONSUMO/EMPQ",
                      "PRON CICLO", "DIAG PRONOSTICO", "% PROM/EXHI", "COBERTURA TDF", "% COBERTURA/EMPQ", "MOTIVO MIN/MAX"]
         if c == "Exhi":
             cols += ["CON>EXHI", "DG EXHIBICION", "DG EXHI = DG MIN"]
@@ -571,7 +571,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             "o que son de PVP alto, siempre que sean aptos (maestro de productos: 'Apto para PTL' = Si) y el mismo SKU ya esté subempacado "
             "en al menos N locales. Nunca CERVEZAS, CERVEZAS SIN ALCOHOL ni AGUAS, ni los ESTADISTICOS excluidos. "
             "Es una propuesta de cambio de maestro; muestra el Max resultante",
-            "PRON PROM DIA = SUMA / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; % PROM/EXHI = promedio diario del pronóstico / Exhibición; COBERTURA TDF = promedio x (FREC + Dias SS); % COBERTURA/EMPQ = esa cobertura / Empq_final (< 50 % y % PROM/EXHI < 55 % = pasa a Min/Max)"],
+            "PROMEDIO PRONOSTICO DIA = TOTAL PRONOSTICO / días de pronóstico del BI (normalmente 12; <1 u/día = insuficiente); UNICOS bajo = valores repetidos; PRON CICLO = venta pronosticada hasta el próximo despacho; % PROM/EXHI = promedio diario del pronóstico / Exhibición; COBERTURA TDF = promedio x (FREC + Dias SS); % COBERTURA/EMPQ = esa cobertura / Empq_final (< 50 % y % PROM/EXHI < 55 % = pasa a Min/Max)"],
     })
     rs = pd.DataFrame(list(resumen.items()), columns=["Indicador", "Valor"])
 
@@ -603,7 +603,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA", "FREC ENTRE DESP", "Físico",
                "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
         pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
-        dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PRON PROM DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
+        dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION", "CONSUMO DIA", "%", "PROMEDIO PRONOSTICO DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO", "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)",
                "PVP", "REDUCCION VALOR"}
         for nombre, d in hojas:
             ws_ = w.sheets[nombre]

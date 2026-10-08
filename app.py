@@ -162,7 +162,7 @@ with st.sidebar:
     p.umbral_venta_prom_dia = st.number_input(
         "Pronóstico insuficiente si promedio diario < (u/día)", 0.0, 10.0, 1.0,
         help="Solo informativo (columna DIAG PRONOSTICO). Si el pronóstico promedio por día "
-             "(SUMA ÷ días de pronóstico) es menor a este valor, se marca como 'insuficiente'.")
+             "(TOTAL PRONOSTICO ÷ días de pronóstico) es menor a este valor, se marca como 'insuficiente'.")
 
     st.subheader("6. Hoja REVISAR · casos extremos")
     st.caption("La hoja REVISAR solo trae 3 casos: inventario negativo, consumo muy superior a la exhibición y sobre stock crítico.")
@@ -367,7 +367,7 @@ vías; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
 Si cumple la regla 3 pero el forecast **sí** cubre la mitad del empaque final (regla 4 no se cumple), **se queda en TDF**.
 Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del empaque final o más, TDF puede despachar con ese forecast.
 
-- **Promedio diario** = suma del pronóstico de todos los días que trae el BI (**SUMA**, normalmente 12; si trae menos, se divide para esos días) ÷ días de pronóstico.
+- **Promedio diario** = suma del pronóstico de todos los días que trae el BI (**TOTAL PRONOSTICO**, normalmente 12 días) ÷ N° de días de pronóstico (**PROMEDIO PRONOSTICO DIA**; si el BI trae menos de 12 días, se divide para esos días).
 - **FREC** = días entre despachos del local (**FREC ENTRE DESP**{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
 - **Dias SS** = días de stock de seguridad de TDF. Se usan **solo para decidir el cambio de método**; no intervienen en el cálculo del Min ni del Max.
 - **Empq_final** = empaque con el que realmente se despacha (el SUBEMPAQUE si existe; si no, el EMPAQUE).
@@ -376,7 +376,7 @@ Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del em
 completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o es lineal el pronóstico
 está mal, y TDF trabajaría con un dato incorrecto; por eso pasa a Min/Max.
 
-Las columnas `SUMA`, `UNICOS`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ` y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
+Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ` y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
 
 **Consumo diario.** El BI entrega el consumo acumulado del mes; se divide para los días transcurridos:
 
