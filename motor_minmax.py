@@ -111,7 +111,7 @@ def _evidencia_subempaque(df: pd.DataFrame) -> pd.DataFrame:
     n_sub = con.groupby("ESTADISTICO").size().rename("_N_LOC_SUB")
     ref = con.groupby("ESTADISTICO")["SUBEMPAQUE"].agg(lambda x: x.mode().iloc[0]).rename("_SUB_REF")
     vals = con.groupby("ESTADISTICO")["SUBEMPAQUE"].agg(
-        lambda x: ", ".join(f"{int(k)} ({v})" for k, v in x.value_counts().items())).rename("_SUB_VALORES")
+        lambda x: ", ".join(f"{int(k)} ({v} {'Local' if v == 1 else 'Locales'})" for k, v in x.value_counts().items())).rename("_SUB_VALORES")
     return pd.concat([tot, n_sub, ref, vals], axis=1).reset_index()
 
 
@@ -577,17 +577,19 @@ def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
 
 
 def marcar_en_revision(df: pd.DataFrame, rev: pd.DataFrame) -> pd.DataFrame:
-    """Agrega a la hoja principal las columnas EN REVISAR / PRIORIDAD REVISAR / ACCIÓN REVISAR (para filtrar)."""
-    df = df.drop(columns=[c for c in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR") if c in df.columns]).copy()
+    """Agrega a la hoja principal la columna EN REVISAR (Sí/No) para poder filtrar los casos de la hoja REVISAR.
+    La prioridad queda en una columna privada (_PRIORIDAD_REVISAR) solo para colorear la fila al exportar."""
+    df = df.drop(columns=[c for c in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR", "_PRIORIDAD_REVISAR")
+                          if c in df.columns]).copy()
     llaves = [c for c in ("CD", "Local", "ESTADISTICO") if c in df.columns and c in rev.columns]
     if not llaves or rev.empty:
-        df["EN REVISAR"] = "No"; df["PRIORIDAD REVISAR"] = ""; df["ACCIÓN REVISAR"] = ""
+        df["EN REVISAR"] = "No"
+        df["_PRIORIDAD_REVISAR"] = ""
         return df
-    mapa = rev[llaves + ["PRIORIDAD", "ACCIÓN PRINCIPAL"]].drop_duplicates(llaves)
+    mapa = rev[llaves + ["PRIORIDAD"]].drop_duplicates(llaves)
     unido = df[llaves].merge(mapa, on=llaves, how="left")
     df["EN REVISAR"] = np.where(unido["PRIORIDAD"].notna().values, "Sí", "No")
-    df["PRIORIDAD REVISAR"] = unido["PRIORIDAD"].fillna("").values
-    df["ACCIÓN REVISAR"] = unido["ACCIÓN PRINCIPAL"].fillna("").values
+    df["_PRIORIDAD_REVISAR"] = unido["PRIORIDAD"].fillna("").values
     return df
 
 
@@ -738,11 +740,13 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
     res = df.drop(columns=[c for c in privadas if c in df.columns])
     res.columns = [c.strftime("%Y-%m-%d") if isinstance(c, (dt.datetime, pd.Timestamp)) else c
                    for c in res.columns]
-    marcas = [c for c in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR") if c in res.columns]
-    if "Max" in res.columns:                       # las marcas van pegadas al Max
-        resto = [c for c in res.columns if c not in marcas]
+    prio_rev = df["_PRIORIDAD_REVISAR"].values if "_PRIORIDAD_REVISAR" in df.columns else [""] * len(df)
+    # Orden: ... Min, Max, EN REVISAR, Exhi, DIF ...  (Exhi se mueve justo antes de DIF)
+    if "Max" in res.columns:
+        pegadas = [c for c in ("EN REVISAR", "Exhi") if c in res.columns]
+        resto = [c for c in res.columns if c not in pegadas]
         pos = resto.index("Max") + 1
-        res = res[resto[:pos] + marcas + resto[pos:]]
+        res = res[resto[:pos] + pegadas + resto[pos:]]
 
     # Paleta
     ROJO, ROJO_OSC, ROJO_CLARO, ROSA = "E30613", "A30410", "FDECEC", "F9C9CD"
@@ -817,8 +821,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                         ws.cell(row=r, column=i).alignment = Alignment(wrap_text=True, vertical="top")
                 if col == "VIABILIDAD SUBEMPAQUE":
                     ws.column_dimensions[get_column_letter(i)].width = 42
-                if col in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR"):
-                    ws.column_dimensions[get_column_letter(i)].width = {"EN REVISAR": 12, "PRIORIDAD REVISAR": 18, "ACCIÓN REVISAR": 30}[col]
+                if col == "EN REVISAR":
+                    ws.column_dimensions[get_column_letter(i)].width = 12
                     ws.cell(row=1, column=i).fill = PatternFill("solid", fgColor="ED7D31")
                 if str(col) in ("CON>EXHI", "DG EXHI = DG MIN") and n:
                     rango = f"{get_column_letter(i)}2:{get_column_letter(i)}{n + 1}"
@@ -832,15 +836,14 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         pf = {"Prioridad ALTA": PatternFill("solid", fgColor="F8CBAD"),
               "Prioridad MEDIA": PatternFill("solid", fgColor="FFE699"),
               "Prioridad BAJA": PatternFill("solid", fgColor="DDEBF7")}
-        if "EN REVISAR" in col_idx and "PRIORIDAD REVISAR" in col_idx:
-            ie, ip, ia = col_idx["EN REVISAR"], col_idx["PRIORIDAD REVISAR"], col_idx.get("ACCIÓN REVISAR")
-            for r, (en, pr) in enumerate(zip(res["EN REVISAR"], res["PRIORIDAD REVISAR"]), 2):
+        if "EN REVISAR" in col_idx:
+            ie = col_idx["EN REVISAR"]
+            for r, (en, pr) in enumerate(zip(res["EN REVISAR"], prio_rev), 2):
                 if en == "Sí":
-                    for ci in (ie, ip, ia):
-                        if ci:
-                            c = wp.cell(row=r, column=ci)
-                            c.fill = pf.get(pr, PatternFill("solid", fgColor="FFE699"))
-                            c.font = Font(bold=True, name="Arial")
+                    c = wp.cell(row=r, column=ie)
+                    c.fill = pf.get(pr, PatternFill("solid", fgColor="FFE699"))
+                    c.font = Font(bold=True, name="Arial")
+                    c.alignment = Alignment(horizontal="center")
                     for nombre_col in ("Local", "ESTADISTICO"):
                         if nombre_col in col_idx:
                             wp.cell(row=r, column=col_idx[nombre_col]).fill = pf.get(pr, PatternFill("solid", fgColor="FFE699"))

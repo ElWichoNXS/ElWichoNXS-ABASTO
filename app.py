@@ -446,7 +446,7 @@ inmovilizar y muestra, para cada caso, los días que tardaría en venderse el em
 
 with st.expander("Hojas del Excel que se descarga"):
     st.markdown(f"""
-- **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Las filas que además están en REVISAR se marcan con color y con las columnas `EN REVISAR`, `PRIORIDAD REVISAR` y `ACCIÓN REVISAR` (para filtrarlas). Incluye columnas de control
+- **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Las filas que además están en REVISAR se marcan con la columna `EN REVISAR` (Sí/No, pintada según la prioridad) para poder filtrarlas; el detalle está en la hoja REVISAR. Incluye columnas de control
   (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ`, `% CONSUMO/EMPQ`).
 - **REVISAR:** **solo casos extremos**; el resto de avisos operativos no se lista.
   - *Prioridad ALTA:* **Inventario Físico Negativo** (`INV NETO < 0`) y **Consumo diario triplica la Exhibición** (`CONSUMO DIA ≥ {p.factor_consumo_exhi:g} × Exhi`).
