@@ -364,7 +364,7 @@ vías; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
 1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0.
 2. **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico, hay **{p.umbral_unicos} o menos valores únicos** (`UNICOS ≤ {p.umbral_unicos}`, es decir, menos de {p.umbral_unicos + 1}); un valor único es el que aparece una sola vez.
    Por eso se revisa con 12 días de venta pronosticada. **Excepción:** si el modelo solo **copió la semana** (los días 8 a 12 son iguales a los días 1 a 5; columna `SEMANA COPIADA = Sí`), se juzga únicamente la **primera semana**: es lineal si tiene
-   al menos un valor repetido y los valores únicos **no superan** a los repetidos (`VALORES UNICOS SEM1 ≤ VALORES REPETIDOS SEM1`). Ejemplos de primera semana: `5,5,5,5,5,5,5` (0 únicos, 1 repetido) → lineal; `3,3,4,4,5,5,6` (1 único, 3 repetidos) → lineal;
+   al menos un valor repetido y los valores únicos **no superan** a los repetidos (`VALORES UNICOS SEM1 ≤ VALORES REPETIDOS SEM1`; con empate, por ejemplo 2 únicos y 2 repetidos, también es lineal). Ejemplos de primera semana: `5,5,5,5,5,5,5` (0 únicos, 1 repetido) → lineal; `3,3,4,4,5,5,6` (1 único, 3 repetidos) → lineal;
    `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) → no lineal; `4.1,3.2,3.4,1.9,4.5,4.4,3.6` (7 únicos) → no lineal.
 
 **Vía B · pasa solo si se cumplen las reglas 3 y 4 JUNTAS (el pronóstico es muy bajo):**

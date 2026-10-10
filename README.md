@@ -17,7 +17,7 @@ Cámbialo cada vez que descargues el BI: **Días de consumo transcurridos** (el 
 ## Qué pasa de TDF a Min/Max (cada fila Local × Estadístico)
 Pasa si cumple **una** de estas vías:
 - **Pronóstico cero** (suma de los días de pronóstico = 0).
-- **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico hay menos de 6 valores únicos (`UNICOS ≤ 5`; único = valor que aparece una sola vez). **Excepción:** si el modelo solo copió la semana (días 8 a 12 iguales a los días 1 a 5, columna `SEMANA COPIADA`), se juzga solo la primera semana: es lineal si tiene un valor repetido y los valores únicos no superan a los repetidos. Ejemplos de primera semana: `5,5,5,5,5,5,5` y `3,3,4,4,5,5,6` → lineales; `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) y 7 valores distintos → no lineales.
+- **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico hay menos de 6 valores únicos (`UNICOS ≤ 5`; único = valor que aparece una sola vez). **Excepción:** si el modelo solo copió la semana (días 8 a 12 iguales a los días 1 a 5, columna `SEMANA COPIADA`), se juzga solo la primera semana: es lineal si tiene un valor repetido y los valores únicos no superan a los repetidos (con empate también es lineal). Ejemplos de primera semana: `5,5,5,5,5,5,5` y `3,3,4,4,5,5,6` → lineales; `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) y 7 valores distintos → no lineales.
 - **Reglas 3 y 4 juntas:** promedio diario del pronóstico < 55 % de la Exhibición **y** promedio × (FREC + Dias SS) < 50 % del empaque final (`Empq_final`). Si cumple la 3 pero el forecast cubre la mitad del empaque, se queda en TDF.
 
 La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.

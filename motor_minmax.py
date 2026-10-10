@@ -118,7 +118,7 @@ def _evidencia_subempaque(df: pd.DataFrame) -> pd.DataFrame:
 def _es_lineal(n_unicos, n_repetidos):
     """Criterio de linealidad de la PRIMERA semana (días 1 a 7), que se aplica cuando el modelo solo copió la semana en los
     días 8 a 12 (vendemos todos los días, así que un pronóstico normal varía día a día). Es lineal si hay al menos un valor repetido y NO hay más valores únicos que valores
-    repetidos: único = valor distinto que aparece una sola vez; repetido = valor distinto que aparece 2 o más veces.
+    repetidos: único = valor distinto que aparece una sola vez; repetido = valor distinto que aparece 2 o más veces. Con empate (mismos únicos que repetidos) también es lineal.
     Ej.: 5,5,5,5,5,5,5 (0 únicos, 1 repetido) y 3,3,4,4,5,5,6 (1 único, 3 repetidos) son lineales;
     2,2,3,4,5,6,6 (3 únicos, 2 repetidos) y 7 valores distintos no lo son."""
     u = np.asarray(n_unicos); r = np.asarray(n_repetidos)
