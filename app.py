@@ -64,7 +64,9 @@ section[data-testid="stSidebar"] h2 {{ color:{ROJO} !important; font-size:1.15re
 section[data-testid="stSidebar"] div[data-testid="stExpander"] {{ border-radius:10px; margin-bottom:6px; }}
 
 /* Controles */
-div[data-testid="stFileUploader"] section {{ background:rgba(227,6,19,.06); border:2px dashed {ROJO}; border-radius:14px; }}
+div[data-testid="stFileUploader"] section {{ background:rgba(227,6,19,.06); border:2px dashed {ROJO}; border-radius:14px; min-height:92px; align-items:center; }}
+div[data-testid="stFileUploader"] label {{ min-height:1.6rem; }}
+div[data-testid="stFileUploader"] label p {{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 button[data-testid="stBaseButton-primary"], div[data-testid="stDownloadButton"] button {{
     background:{ROJO}; color:#fff; border:none; border-radius:10px; font-weight:700; box-shadow:0 3px 10px rgba(227,6,19,.3); }}
 button[data-testid="stBaseButton-primary"]:hover, div[data-testid="stDownloadButton"] button:hover {{ background:{ROJO_OSC}; color:#fff; border:none; }}
@@ -395,7 +397,7 @@ st.markdown(f"""
 # Botón de reglas (ocultas por defecto; cada bloque se minimiza por separado)
 st.session_state.setdefault("ver_reglas", False)
 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-b1, b2 = st.columns([1, 3])
+b1, b2 = st.columns([1.3, 2.7])
 if b1.button("Ocultar las reglas de cálculo" if st.session_state["ver_reglas"] else "📘 Ver las reglas de cálculo",
              key="btn_reglas", type="secondary", width="stretch"):
     st.session_state["ver_reglas"] = not st.session_state["ver_reglas"]
@@ -407,9 +409,11 @@ if st.session_state["ver_reglas"]:
 # ---------------- Carga ----------------
 seccion("Carga de archivos", "Sube el BI y, opcionalmente, el maestro de productos aptos")
 c1, c2, c3 = st.columns(3)
-f_bi = c1.file_uploader("1) Excel del BI (obligatorio)", type=["xlsx"], key="f_bi")
-f_ap = c2.file_uploader("2) Maestro de productos (columnas 'Estadístico' y 'Apto para PTL')", type=["xlsx"], key="f_ap")
-f_ant = c3.file_uploader("3) Consumo del mes anterior por local e ítem (opcional)", type=["xlsx"], key="f_ant",
+f_bi = c1.file_uploader("1) Excel del BI (obligatorio)", type=["xlsx"], key="f_bi",
+                        help="Excel crudo que se descarga del BI, con el pronóstico de 12 días por local y estadístico.")
+f_ap = c2.file_uploader("2) Maestro de productos aptos", type=["xlsx"], key="f_ap",
+                        help="Excel con las columnas 'Estadístico' y 'Apto para PTL' (Si / No). Opcional: sin él se asume que todos son aptos.")
+f_ant = c3.file_uploader("3) Consumo del mes anterior (opcional)", type=["xlsx"], key="f_ant",
                          help="Columnas: Local, Estadístico y Consumo (total del mes). Se usa como base del consumo diario cuando los días "
                               "transcurridos del mes son pocos. Se activa con la casilla del grupo 1 de parámetros.")
 
