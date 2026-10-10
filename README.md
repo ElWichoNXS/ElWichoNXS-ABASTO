@@ -17,7 +17,7 @@ Cámbialo cada vez que descargues el BI: **Días de consumo transcurridos** (el 
 ## Qué pasa de TDF a Min/Max (cada fila Local × Estadístico)
 Pasa si cumple **una** de estas vías:
 - **Pronóstico cero** (suma de los días de pronóstico = 0).
-- **Pronóstico lineal:** en la **primera semana** (días 1 a 7) al menos 7 días repiten valor (parámetro). Se vende todos los días, así que un pronóstico normal varía día a día. Que desde el día 8 el modelo copie la semana **no** cuenta como lineal.
+- **Pronóstico lineal:** se mira solo la **primera semana** (días 1 a 7). Se cuentan los valores únicos (aparecen una sola vez) y los valores repetidos (aparecen 2 o más veces); es lineal si hay al menos un valor repetido y los únicos no superan a los repetidos. Ejemplos: `5,5,5,5,5,5,5` y `3,3,4,4,5,5,6` → lineales; `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) y 7 valores distintos → no lineales. Que desde el día 8 el modelo copie la semana **no** cuenta como lineal.
 - **Reglas 3 y 4 juntas:** promedio diario del pronóstico < 55 % de la Exhibición **y** promedio × (FREC + Dias SS) < 50 % del empaque final (`Empq_final`). Si cumple la 3 pero el forecast cubre la mitad del empaque, se queda en TDF.
 
 La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.

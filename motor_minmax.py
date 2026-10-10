@@ -27,7 +27,6 @@ class Params:
     # --- Qué filas pasan de TDF a Min/Max ---
     factor_prom_exhi: float = 0.55       # regla 3: promedio diario del pronóstico < 55 % de la Exhibición ...
     pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
-    dias_repetidos_lineal: int = 7       # pronóstico "lineal": en la PRIMERA semana (7 días) al menos N días repiten valor (7 = toda la semana)
     # --- Cálculo del Min ---
     umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura (regla B)
     usar_frec_efectiva: bool = False     # False: FREC del BI (promedio). True: MAYOR intervalo real entre despachos
@@ -113,6 +112,16 @@ def _evidencia_subempaque(df: pd.DataFrame) -> pd.DataFrame:
     vals = con.groupby("ESTADISTICO")["SUBEMPAQUE"].agg(
         lambda x: ", ".join(f"{int(k)} ({v} {'Local' if v == 1 else 'Locales'})" for k, v in x.value_counts().items())).rename("_SUB_VALORES")
     return pd.concat([tot, n_sub, ref, vals], axis=1).reset_index()
+
+
+def _es_lineal(n_unicos, n_repetidos):
+    """Pronóstico LINEAL (se mira solo la primera semana, días 1 a 7; vendemos todos los días, así que un pronóstico
+    normal varía día a día). Es lineal si hay al menos un valor repetido y NO hay más valores únicos que valores
+    repetidos: único = valor distinto que aparece una sola vez; repetido = valor distinto que aparece 2 o más veces.
+    Ej.: 5,5,5,5,5,5,5 (0 únicos, 1 repetido) y 3,3,4,4,5,5,6 (1 único, 3 repetidos) son lineales;
+    2,2,3,4,5,6,6 (3 únicos, 2 repetidos) y 7 valores distintos no lo son."""
+    u = np.asarray(n_unicos); r = np.asarray(n_repetidos)
+    return (r >= 1) & (u <= r)
 
 
 def _calc_max(minimo, R, empaque, sub, p: "Params"):
@@ -254,8 +263,10 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     # no es linealidad; lineal es que en los 7 primeros días el valor se repita (ventas todos los días).
     V7 = V[:, :7]
     igual7 = (V7[:, :, None] == V7[:, None, :]).sum(axis=2)
-    dias_rep = (igual7 >= 2).sum(axis=1)                     # días de la semana 1 que comparten valor con otro día
-    df["DIAS REPETIDOS SEM1"] = dias_rep
+    n_unicos7 = (igual7 == 1).sum(axis=1)                    # valores distintos que aparecen UNA sola vez en la semana 1
+    n_repet7 = np.round(np.where(igual7 >= 2, 1.0 / np.maximum(igual7, 1), 0).sum(axis=1)).astype(int)  # valores distintos que se REPITEN
+    df["VALORES UNICOS SEM1"] = n_unicos7
+    df["VALORES REPETIDOS SEM1"] = n_repet7
     sin_pron = np.all(np.isnan(V), axis=1)
 
     # Filtro TDF -> Min/Max. Pasa a Min/Max si:
@@ -269,7 +280,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     prom_v = suma / n_dias
     cob_v = prom_v * (df["FREC EFECTIVA"].values + df["Dias SS"].values)    # unidades que cubre el forecast hasta el próximo despacho + SS
     cero = suma == 0
-    lineal = dias_rep >= p.dias_repetidos_lineal
+    lineal = _es_lineal(n_unicos7, n_repet7)
     r3 = prom_v < p.factor_prom_exhi * exhi_v
     r4 = cob_v < p.pct_empaque_cobertura * df["Empq_final"].values
     r34 = r3 & r4
@@ -310,7 +321,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     df["PRON CICLO"] = np.round(cum[np.arange(len(df)), idx], 2)      # venta pronosticada hasta el próximo despacho
     df["PROMEDIO PRONOSTICO DIA"] = np.round(df["TOTAL PRONOSTICO"] / n_dias, 2)
     insuf = df["PROMEDIO PRONOSTICO DIA"] < p.umbral_venta_prom_dia
-    rep = df["DIAS REPETIDOS SEM1"] >= p.dias_repetidos_lineal
+    rep = _es_lineal(df["VALORES UNICOS SEM1"].values, df["VALORES REPETIDOS SEM1"].values)
     etq_insuf = f"Insuficiente (<{p.umbral_venta_prom_dia:g} u/día)"
     df["DIAG PRONOSTICO"] = np.select(
         [df["_sin_pronostico"], rep & insuf, rep, insuf],
@@ -387,14 +398,14 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     orden_bi = [c for c in df_bi.columns if isinstance(c, str) and c.strip() in df.columns]
     orden_bi = [c.strip() for c in orden_bi]
     calc = ["CONSUMO DIA", "APTO", "DIF", "%", "DG MIN", "DGMAX", "CON>EXHI",
-            "DG EXHIBICION", "DG EXHI = DG MIN", "TOTAL PRONOSTICO", "UNICOS", "DIAS REPETIDOS SEM1", "_regla_min", "_sin_pronostico"]
+            "DG EXHIBICION", "DG EXHI = DG MIN", "TOTAL PRONOSTICO", "UNICOS", "VALORES UNICOS SEM1", "VALORES REPETIDOS SEM1", "_regla_min", "_sin_pronostico"]
     base = [c for c in orden_bi if c not in ("Min", "Max") and c not in calc]
     cols = []
     for c in base:
         cols.append(c)
         if c == "Físico":
             cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
-                     "FREC EFECTIVA", "PROMEDIO PRONOSTICO DIA", "TOTAL PRONOSTICO", "UNICOS", "DIAS REPETIDOS SEM1", "% CONSUMO/EMPQ",
+                     "FREC EFECTIVA", "PROMEDIO PRONOSTICO DIA", "TOTAL PRONOSTICO", "UNICOS", "VALORES UNICOS SEM1", "VALORES REPETIDOS SEM1", "% CONSUMO/EMPQ",
                      "PRON CICLO", "DIAG PRONOSTICO", "% PROM/EXHI", "COBERTURA TDF", "% COBERTURA/EMPQ", "MOTIVO MIN/MAX"]
         if c == "Exhi":
             cols += ["CON>EXHI", "DG EXHIBICION", "DG EXHI = DG MIN"]
@@ -716,7 +727,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
     return [
         ("Contexto", "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de la hoja 'Pronóstico cero' son las que conviene "
                      "pasar a método Min/Max, donde se usan los Min y Max configurados por local y estadístico en lugar del forecast."),
-        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (en la primera semana, {p.dias_repetidos_lineal} o más de los 7 días repiten valor; que desde el día 8 el modelo copie la semana no cuenta); o (3 y 4 juntas) el promedio diario del "
+        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (en la primera semana, los valores únicos no superan a los valores repetidos; que desde el día 8 el modelo copie la semana no cuenta); o (3 y 4 juntas) el promedio diario del "
                                f"pronóstico es menor al {p.factor_prom_exhi:.0%} de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el {p.pct_empaque_cobertura:.0%} del "
                                "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero y lineal pasan siempre."),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
@@ -784,7 +795,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                 ([("SUGERIR SUBEMPAQUE", sug, "2F75B5")] if len(sug) else [])
         destacar_min = {"Min"}
         destacar_max = {"Max", "MAX ACTUAL", "MAX CON SUB"}
-        ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "DIAS REPETIDOS SEM1", "FREC EFECTIVA",
+        ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "VALORES UNICOS SEM1", "VALORES REPETIDOS SEM1", "FREC EFECTIVA",
                "FREC ENTRE DESP", "Físico", "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
         pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
         dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION",
@@ -1001,7 +1012,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         titulo("1. Cambio de método: de dónde partimos y a dónde llegamos")
         seg = [
             ("Pronóstico cero o sin pronóstico", resumen["segmento_1_pasa_pronostico_cero"], "Min/Max"),
-            (f"Pronóstico lineal ({p.dias_repetidos_lineal} o más días repetidos en la 1ª semana)", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
+            ("Pronóstico lineal (1ª semana: valores únicos <= valores repetidos)", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
             (f"Promedio < {p.factor_prom_exhi:.0%} de la Exhi y cobertura < {p.pct_empaque_cobertura:.0%} del empaque (reglas 3 y 4)",
              resumen["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], "Min/Max"),
             (f"Promedio bajo, pero el forecast cubre {p.pct_empaque_cobertura:.0%} del empaque", resumen["segmento_4_tdf_rescatado_por_cobertura_empaque"], "TDF"),
@@ -1142,7 +1153,6 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Días de consumo transcurridos", p.dias_transcurridos),
             ("Regla 3 · promedio < % de la Exhibición", f"{p.factor_prom_exhi:.0%}"),
             ("Regla 4 · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
-            ("Pronóstico lineal: días repetidos en la 1ª semana >=", p.dias_repetidos_lineal),
             ("Exhibición cubre menos de (días)", p.umbral_dg_exhi),
             ("Usar el mayor intervalo real entre despachos", "Sí" if p.usar_frec_efectiva else "No"),
             ("Cobertura adicional del Max (días)", p.dias_cobertura_max),

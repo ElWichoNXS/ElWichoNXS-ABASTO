@@ -132,13 +132,9 @@ with st.sidebar:
              "de seguridad). Si ese forecast NO cubre ni este porcentaje del empaque final (0.50 = la mitad), y además se cumple la regla 3, "
              "el producto pasa a Min/Max. Si SÍ lo cubre, se queda en TDF. Los Dias SS se usan solo para esta decisión (en TDF), no para "
              "calcular el Min ni el Max.")
-    p.dias_repetidos_lineal = st.number_input(
-        "Pronóstico lineal: días repetidos en la primera semana ≥", 2, 7, 7,
-        help="También pasa a Min/Max el producto con pronóstico LINEAL: el modelo todavía no aprendió y repite valores. "
-             "Como vendemos todos los días, un pronóstico normal varía día a día. Se mira SOLO la primera semana (días 1 a 7): "
-             "se cuenta cuántos de esos 7 días comparten el mismo valor con otro día. Con 7, toda la semana es lineal (por ejemplo, 7 días iguales). "
-             "Que desde el día 8 el pronóstico vuelva a copiar la semana NO se considera lineal, porque es solo el patrón semanal. "
-             "Bajar el número vuelve la regla más estricta con el pronóstico (pasan más productos).")
+    st.caption("**Pronóstico lineal** (también pasa a Min/Max): se mira solo la primera semana (días 1 a 7). "
+               "Es lineal si los valores únicos (aparecen una sola vez) no superan a los valores repetidos. "
+               "Que desde el día 8 se copie la semana no cuenta. Ver el detalle en las reglas, al final de la página.")
 
     st.subheader("3. Cálculo del Min")
     p.umbral_dg_exhi = st.number_input(
@@ -362,7 +358,10 @@ vías; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
 
 **Vía A · siempre pasa (el pronóstico está mal):**
 1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0.
-2. **Pronóstico lineal:** en la **primera semana** (días 1 a 7) al menos **{p.dias_repetidos_lineal}** días repiten valor (`DIAS REPETIDOS SEM1 ≥ {p.dias_repetidos_lineal}`). Como se vende todos los días, un pronóstico normal varía día a día; si se repite, el modelo aún no aprendió.
+2. **Pronóstico lineal:** se mira solo la **primera semana** (días 1 a 7). Como se vende todos los días, un pronóstico normal varía día a día; si se repite, el modelo aún no aprendió.
+   Se cuentan los **valores únicos** (valores distintos que aparecen una sola vez) y los **valores repetidos** (valores distintos que aparecen 2 o más veces). Es lineal si hay al menos un valor repetido y los únicos **no superan** a los repetidos
+   (`VALORES UNICOS SEM1 ≤ VALORES REPETIDOS SEM1`). Ejemplos: `5,5,5,5,5,5,5` (0 únicos, 1 repetido) → lineal; `3,3,4,4,5,5,6` (1 único, 3 repetidos) → lineal; `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) → no lineal;
+   `4.1,3.2,3.4,1.9,4.5,4.4,3.6` (7 únicos) → no lineal. Si desde el día 8 el modelo vuelve a copiar la semana, **no** se considera lineal.
    si el forecast repite los mismos valores o es plano (por ejemplo, la semana 2 copia a la semana 1), el pronóstico no es confiable.
 
 **Vía B · pasa solo si se cumplen las reglas 3 y 4 JUNTAS (el pronóstico es muy bajo):**
@@ -381,7 +380,7 @@ Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del em
 completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o es lineal el pronóstico
 está mal, y TDF trabajaría con un dato incorrecto; por eso pasa a Min/Max.
 
-Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `DIAS REPETIDOS SEM1`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ` y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
+Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `VALORES UNICOS SEM1`, `VALORES REPETIDOS SEM1`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ` y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
 
 **Consumo diario.** El BI entrega el consumo acumulado del mes; se divide para los días transcurridos:
 
