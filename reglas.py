@@ -20,12 +20,13 @@ Como la data viene en TDF, los Min/Max que traiga el BI no se usan (no aplican e
 El cálculo es por cada combinación **Local × Estadístico**. El producto **pasa de TDF a Min/Max** si cumple **una** de estas dos
 vías; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
 
-**Vía A · siempre pasa (el pronóstico está mal):**
+**Vía A · siempre pasa (el pronóstico está mal o no sostiene la exhibición):**
 1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0.
 2. **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico, hay **{p.umbral_unicos} o menos valores únicos** (`UNICOS ≤ {p.umbral_unicos}`, es decir, menos de {p.umbral_unicos + 1}); un valor único es el que aparece una sola vez.
    Por eso se revisa con 12 días de venta pronosticada. **Excepción:** si el modelo solo **copió la semana** (los días 8 a 12 son iguales a los días 1 a 5; columna `SEMANA COPIADA = Sí`), se juzga únicamente la **primera semana**: es lineal si tiene
    al menos un valor repetido y los valores únicos **no superan** a los repetidos (`VALORES UNICOS SEM1 ≤ VALORES REPETIDOS SEM1`; con empate, por ejemplo 2 únicos y 2 repetidos, también es lineal). Ejemplos de primera semana: `5,5,5,5,5,5,5` (0 únicos, 1 repetido) → lineal; `3,3,4,4,5,5,6` (1 único, 3 repetidos) → lineal;
    `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) → no lineal; `4.1,3.2,3.4,1.9,4.5,4.4,3.6` (7 únicos) → no lineal.
+2b. **El pronóstico total no cubre la exhibición** (activable en los parámetros): `TOTAL PRONOSTICO < {p.factor_total_exhi:g} × Exhi`{"" if p.usar_total_menor_exhi else " **(desactivado ahora)**"}. Si en todos los días de pronóstico no se vende ni lo que cabe en la exhibición, TDF no puede sostener la góndola; con Min/Max, el Min = Exhibición la mantiene llena. No es un pronóstico «lineal»: el pronóstico puede ser correcto pero muy bajo.
 
 **Vía B · pasa solo si se cumplen las reglas 3 y 4 JUNTAS (el pronóstico es muy bajo):**
 
@@ -115,6 +116,7 @@ inmovilizar y muestra, para cada caso, los días que tardaría en venderse el em
 - **REVISAR:** **solo casos extremos**; el resto de avisos operativos no se lista.
   - *Prioridad ALTA:* **Inventario Físico Negativo** (`INV NETO < 0`) y **Consumo diario triplica la Exhibición** (`CONSUMO DIA ≥ {p.factor_consumo_exhi:g} × Exhi`).
   - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), excepto lo que se explica por la exhibición (ver Informativo).
+  - *Prioridad MEDIA:* **Pronóstico subestima el consumo real** (`CONSUMO DIA ≥ {p.factor_consumo_vs_pron:g} × promedio diario del pronóstico` y consumo ≥ {p.consumo_min_subestima:g} u/día). El modelo está pronosticando mucho menos de lo que realmente se vende; la acción es revisarlo con planificación de demanda. El Min/Max parte del consumo real (reglas A/B del Min).
   - *Informativo:* **Sobrestock por cubrir exhibición**. La exhibición la define el área comercial y siempre se abastece, así que solo se deja mapeado: el exceso de stock se debe a llenar la exhibición (la Exhi sola cubre más de {p.sobrestock_dias:g} días, o cubre al menos el {p.pct_exhi_en_cobertura:.0%} de los días del Max). Se separa en dos: **consumo ≤ {p.consumo_bajo_exhi:g} u/día** y **consumo > {p.consumo_bajo_exhi:g} u/día**.
   - Los productos sin consumo no se revisan: solo se mantiene la exhibición (Min = Exhi).
   - **Cada caso trae una ACCIÓN PRINCIPAL y una SUGERENCIA A REALIZAR.** Orden de soluciones: (1) corregir el dato (inventario negativo, consumo atípico); (2) **subempacar**, si es viable

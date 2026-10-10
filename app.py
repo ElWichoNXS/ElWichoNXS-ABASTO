@@ -136,6 +136,7 @@ ESC_REV = alt.Scale(domain=["Sí", "Informativo", "No"], range=[C_MINMAX, C_AMBA
 _P0 = Params()
 DEFAULTS = {
     "dias_transcurridos": 5, "factor_prom_exhi": 0.55, "pct_empaque_cobertura": 0.50, "umbral_unicos": 5,
+    "usar_total_menor_exhi": True, "factor_total_exhi": 1.0, "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
     "umbral_dg_exhi": 2.0, "usar_frec_efectiva": False, "dias_cobertura_max": 0.0,
     "umbral_venta_prom_dia": 1.0, "sobrestock_dias": 20.0, "consumo_bajo_exhi": 0.5,
     "pct_exhi_en_cobertura": 0.80, "factor_consumo_exhi": 3.0, "sub_dias_venta_empaque": 12.0,
@@ -178,6 +179,15 @@ with st.sidebar:
             "Cámbialo cada vez que descargues el BI.")
 
     with st.expander("2 · Qué pasa de TDF a Min/Max"):
+        p.usar_total_menor_exhi = st.checkbox(
+            "Pasa si el pronóstico total no cubre la exhibición", key="p_usar_total_menor_exhi",
+            help="Filtro 2 (siempre pasa, sin importar las reglas 3 y 4): si la suma del pronóstico de los 12 días es menor a la "
+                 "exhibición, TDF no puede sostener ni la góndola, así que el producto pasa a Min/Max con Min = Exhibición. "
+                 "Desactívalo para usar solo cero, lineal y las reglas 3 y 4.")
+        p.factor_total_exhi = num(
+            "Filtro 2 · pronóstico total menor a (veces la Exhibición)", "factor_total_exhi", 0.1, 5.0,
+            "1.00 = el pronóstico de todos los días no cubre ni una exhibición. Súbelo (por ejemplo 2.0) para que pasen más productos "
+            "y bájalo para que pasen menos.", step=0.1, fmt="%.2f")
         p.factor_prom_exhi = num(
             "Regla 3 · Promedio diario del pronóstico menor a (% de la Exhibición)", "factor_prom_exhi", 0.05, 3.0,
             "Primera mitad de la condición de cambio. El promedio diario del pronóstico (suma de los días ÷ días de pronóstico) "
@@ -240,6 +250,13 @@ with st.sidebar:
             "Incongruencia: consumo diario ≥ (veces la Exhibición)", "factor_consumo_exhi", 1.0, 20.0,
             "Se envía a REVISAR si el CONSUMO DIA es esta cantidad de veces la Exhi o más. Con 3, el consumo diario triplica la exhibición.",
             step=0.5)
+        p.factor_consumo_vs_pron = num(
+            "Pronóstico subestima: consumo diario ≥ (veces el promedio del pronóstico)", "factor_consumo_vs_pron", 1.0, 20.0,
+            "Se envía a REVISAR (prioridad media) si el consumo real por día es esta cantidad de veces el promedio diario del pronóstico o más: "
+            "el modelo está subestimando la venta. Con 3, el consumo real triplica lo pronosticado.", step=0.5)
+        p.consumo_min_subestima = num(
+            "Pronóstico subestima: solo si el consumo real es al menos (u/día)", "consumo_min_subestima", 0.0, 50.0,
+            "Evita marcar productos de consumo mínimo, donde una venta aislada distorsiona la comparación.", step=0.5)
 
     with st.expander("7 · Sugerencias de subempaque"):
         st.caption("Se sugiere subempacar solo para evitar sobrestock o cuando el producto es de PVP alto.")
@@ -449,12 +466,12 @@ with t_res:
     ])
 
     seg = pd.DataFrame({
-        "Segmento": ["Pronóstico cero", "Pronóstico lineal", "Reglas 3 + 4 (promedio bajo)",
+        "Segmento": ["Pronóstico cero", "Pronóstico lineal", "Total no cubre la exhibición", "Reglas 3 + 4 (promedio bajo)",
                      "Rescatado: el forecast cubre el empaque", "Pronóstico normal"],
         "Filas": [r["segmento_1_pasa_pronostico_cero"], r["segmento_2_pasa_pronostico_lineal"],
-                  r["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], r["segmento_4_tdf_rescatado_por_cobertura_empaque"],
+                  r["segmento_2b_pasa_total_menor_exhibicion"], r["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], r["segmento_4_tdf_rescatado_por_cobertura_empaque"],
                   r["segmento_5_tdf_pronostico_normal"]],
-        "Destino": ["Pasa a Min/Max"] * 3 + ["Se queda en TDF"] * 2})
+        "Destino": ["Pasa a Min/Max"] * 4 + ["Se queda en TDF"] * 2})
     g1, g2 = st.columns([1.7, 1])
     with g1:
         grafico("Qué pasa con cada fila del BI", "Cuántas pasan a Min/Max y por qué vía; el resto se queda en TDF.",
@@ -541,7 +558,7 @@ with t_rev:
     n_media = int((rev["PRIORIDAD"] == "Prioridad MEDIA").sum())
     n_inf = int((rev["PRIORIDAD"] == "Informativo").sum())
     kpis([("Prioridad alta", n(n_alta), "Inventario negativo o consumo ≫ exhibición", ROJO),
-          ("Prioridad media", n(n_media), "Sobre stock crítico", C_AMBAR),
+          ("Prioridad media", n(n_media), "Sobre stock crítico o pronóstico que subestima", C_AMBAR),
           ("Informativo", n(n_inf), "Sobrestock por cubrir exhibición", C_TDF),
           ("Total en la hoja", n(len(rev)), "Casos de REVISAR", C_VERDE)])
     if len(rev):

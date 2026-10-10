@@ -26,6 +26,8 @@ class Params:
     dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
     # --- Qué filas pasan de TDF a Min/Max ---
     umbral_unicos: int = 5               # pronóstico "lineal": de los 12 días, 5 o menos valores únicos (menos de 6 que no se repiten)
+    usar_total_menor_exhi: bool = True   # filtro 2: el pronóstico total de los días no cubre ni la exhibición -> pasa a Min/Max
+    factor_total_exhi: float = 1.0       # ... TOTAL PRONOSTICO < factor x Exhi (1.0 = no cubre ni una exhibición)
     factor_prom_exhi: float = 0.55       # regla 3: promedio diario del pronóstico < 55 % de la Exhibición ...
     pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
     # --- Cálculo del Min ---
@@ -38,6 +40,8 @@ class Params:
     # --- Hoja REVISAR (solo casos extremos) ---
     sobrestock_dias: float = 20.0       # sobre stock crítico: cobertura del Max (Max / CONSUMO DIA) > 20 días
     factor_consumo_exhi: float = 3.0     # incongruencia severa: CONSUMO DIA >= 3 x Exhi
+    factor_consumo_vs_pron: float = 3.0  # pronóstico subestima: CONSUMO DIA >= 3 x promedio diario del pronóstico ...
+    consumo_min_subestima: float = 2.0   # ... y el consumo real es al menos 2 u/día (evita ruido de consumos mínimos)
     consumo_bajo_exhi: float = 0.5       # corte para separar "Sobrestock por cubrir exhibición" en consumo <= 0.5 y > 0.5 u/día
     pct_exhi_en_cobertura: float = 0.8   # no es sobre stock si la Exhi explica >= 80 % de los días de cobertura del Max
     # --- Sugerencias de subempaque (el Max usa SIEMPRE el SUBEMPAQUE real del BI) ---
@@ -295,18 +299,21 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     r3 = prom_v < p.factor_prom_exhi * exhi_v
     r4 = cob_v < p.pct_empaque_cobertura * df["Empq_final"].values
     r34 = r3 & r4
-    cond_mm = cero | lineal | r34
+    r_tot = (suma < p.factor_total_exhi * exhi_v) & (exhi_v > 0) if p.usar_total_menor_exhi else np.zeros(len(suma), dtype=bool)
+    cond_mm = cero | lineal | r_tot | r34
     seg = {                                   # segmentos mutuamente excluyentes (suman el total del BI)
         "1_pasa_pronostico_cero": int(cero.sum()),
         "2_pasa_pronostico_lineal": int((lineal & ~cero).sum()),
-        "3_pasa_prom_exhi_y_cobertura_empaque": int((r34 & ~lineal & ~cero).sum()),
-        "4_tdf_rescatado_por_cobertura_empaque": int((r3 & ~r4 & ~lineal & ~cero).sum()),
+        "2b_pasa_total_menor_exhibicion": int((r_tot & ~lineal & ~cero).sum()),
+        "3_pasa_prom_exhi_y_cobertura_empaque": int((r34 & ~r_tot & ~lineal & ~cero).sum()),
+        "4_tdf_rescatado_por_cobertura_empaque": int((r3 & ~r4 & ~r_tot & ~lineal & ~cero).sum()),
         "5_tdf_pronostico_normal": int((~cond_mm & ~(r3 & ~r4)).sum()),
         "total_BI": n_in,
     }
     motivo = np.where(cero, "Pronóstico cero",
               np.where(lineal, "Pronóstico lineal (repetido)",
-              np.where(r34, f"Promedio < {p.factor_prom_exhi:.0%} de la Exhibición y cobertura (FREC+SS) < {p.pct_empaque_cobertura:.0%} del empaque", "")))
+              np.where(r_tot, f"Pronóstico de {n_dias} días no cubre la exhibición",
+              np.where(r34, f"Promedio < {p.factor_prom_exhi:.0%} de la Exhibición y cobertura (FREC+SS) < {p.pct_empaque_cobertura:.0%} del empaque", ""))))
     df["MOTIVO MIN/MAX"] = motivo
     df["COBERTURA TDF"] = np.round(cob_v, 2)
     df["% COBERTURA/EMPQ"] = cob_v / df["Empq_final"].replace(0, np.nan).values
@@ -460,11 +467,14 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     sobrestock = (df["COBERTURA MAX (DIAS)"] > p.sobrestock_dias) & ~sobre_exhi
     inv_neg = inv < 0
     incongruencia = (R > 0) & (R >= p.factor_consumo_exhi * exhi)
+    prom_pron = pd.to_numeric(df["PROMEDIO PRONOSTICO DIA"], errors="coerce").fillna(0) if "PROMEDIO PRONOSTICO DIA" in df else pd.Series(0.0, index=df.index)
+    subestima = (R >= p.consumo_min_subestima) & (R >= p.factor_consumo_vs_pron * prom_pron)
 
     reglas = [
         ("Prioridad ALTA", "Inventario Físico Negativo", inv_neg),
         ("Prioridad ALTA", "Consumo diario triplica la Exhibición", incongruencia),
         ("Prioridad MEDIA", f"Sobre stock: Cobertura > {p.sobrestock_dias:g} días", sobrestock),
+        ("Prioridad MEDIA", "Pronóstico subestima el consumo real", subestima),
         ("Informativo", f"Sobrestock por cubrir exhibición (consumo <= {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_bajo),
         ("Informativo", f"Sobrestock por cubrir exhibición (consumo > {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_alto),
     ]
@@ -487,7 +497,7 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     rev = _sugerir_acciones(rev, p)
     cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "ACCIÓN PRINCIPAL", "ALERTA PVP", "SUGERENCIA A REALIZAR", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
             "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "Empq_final", "SUBEMPAQUE", "FREC EFECTIVA",
-            "CONSUMO DIA", "CONSUMO CICLO", "Exhi", "INV NETO", "DIAS INVENTARIO", "UNIDADES SOBRE MAX",
+            "CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "CONSUMO CICLO", "Exhi", "INV NETO", "DIAS INVENTARIO", "UNIDADES SOBRE MAX",
             "Min", "Max", "COBERTURA EXHI (DIAS)", "COBERTURA MAX (DIAS)", "FALTANTE VS CICLO", "PVP",
             "VIABILIDAD SUBEMPAQUE", "SUB SUGERIDO", "MAX CON SUB", "REDUCCION MAX", "_regla_min", "MOTIVO MIN/MAX"]
     return rev[[c for c in cols if c in rev.columns]].reset_index(drop=True)
@@ -574,6 +584,12 @@ def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
                 add("Notificar al área comercial",
                     f"Notificar al área comercial: el consumo diario ({R[i]:.1f}) es {rel} la Exhi ({exhi[i]:g}); posible exhibición "
                     f"insuficiente o consumo atípico (promoción, dato erróneo). El Min ya está en {int(rev.at[i, 'Min'])} (regla A).")
+            elif mo.startswith("Pronóstico subestima"):
+                pr_ = float(rev.at[i, "PROMEDIO PRONOSTICO DIA"]) if "PROMEDIO PRONOSTICO DIA" in rev else 0.0
+                rel = f"{R[i] / pr_:.1f} veces" if pr_ > 0 else "con pronóstico en 0, muy por encima de"
+                add("Revisar pronóstico (planificación de demanda)",
+                    f"Revisar el pronóstico con planificación de demanda: el consumo real ({R[i]:.2f} u/día) es {rel} el promedio pronosticado "
+                    f"({pr_:.2f} u/día). El modelo subestima la venta; el Min/Max parte del consumo real (reglas A/B del Min).")
             elif mo.startswith("Sobre stock"):
                 e = estado[k]
                 if e in ("si", "posible"):
@@ -738,9 +754,9 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
     return [
         ("Contexto", "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de la hoja 'Pronóstico cero' son las que conviene "
                      "pasar a método Min/Max, donde se usan los Min y Max configurados por local y estadístico en lugar del forecast."),
-        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (de los 12 días, menos de {p.umbral_unicos + 1} valores únicos; si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana: valores únicos <= valores repetidos); o (3 y 4 juntas) el promedio diario del "
+        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (de los 12 días, menos de {p.umbral_unicos + 1} valores únicos; si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana: valores únicos <= valores repetidos); {'(2b) el pronóstico total de los días es menor a ' + format(p.factor_total_exhi, 'g') + ' x la Exhibición (no cubre ni la exhibición); ' if p.usar_total_menor_exhi else ''}o (3 y 4 juntas) el promedio diario del "
                                f"pronóstico es menor al {p.factor_prom_exhi:.0%} de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el {p.pct_empaque_cobertura:.0%} del "
-                               "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero y lineal pasan siempre."),
+                               "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero, lineal y 'no cubre la exhibición' pasan siempre."),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
         ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos."),
         ("FREC", f"Días entre despachos: {frec}."),
@@ -750,7 +766,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
                 f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
         ("Hoja REVISAR", f"Solo casos extremos: inventario físico negativo (ALTA); consumo diario >= {p.factor_consumo_exhi:g} veces la Exhibición (ALTA); "
-                         f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); y sobre stock por cubrir la exhibición (solo informativo: la exhibición la define el área comercial y siempre se abastece). "
+                         f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); pronóstico que subestima el consumo real, con CONSUMO DIA >= {p.factor_consumo_vs_pron:g} veces el promedio del pronóstico y al menos {p.consumo_min_subestima:g} u/día (MEDIA); y sobre stock por cubrir la exhibición (solo informativo: la exhibición la define el área comercial y siempre se abastece). "
                          "Cada caso trae ACCIÓN PRINCIPAL y SUGERENCIA A REALIZAR: corregir el dato, notificar al área comercial, subempacar si es viable y reduce el Max (con ALERTA PVP si el PVP es menor al mínimo), o dejarlo mapeado. "
                          "En 'Pronóstico cero' esas filas se marcan (EN REVISAR) para filtrarlas."),
         ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
@@ -1024,6 +1040,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         seg = [
             ("Pronóstico cero o sin pronóstico", resumen["segmento_1_pasa_pronostico_cero"], "Min/Max"),
             (f"Pronóstico lineal (menos de {p.umbral_unicos + 1} valores únicos en los 12 días)", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
+            (f"Pronóstico total de los días < {p.factor_total_exhi:g} x la Exhibición (no cubre ni la exhibición)", resumen.get("segmento_2b_pasa_total_menor_exhibicion", 0), "Min/Max"),
             (f"Promedio < {p.factor_prom_exhi:.0%} de la Exhi y cobertura < {p.pct_empaque_cobertura:.0%} del empaque (reglas 3 y 4)",
              resumen["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], "Min/Max"),
             (f"Promedio bajo, pero el forecast cubre {p.pct_empaque_cobertura:.0%} del empaque", resumen["segmento_4_tdf_rescatado_por_cobertura_empaque"], "TDF"),
@@ -1090,7 +1107,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
 
         if len(rev) and "ACCIÓN PRINCIPAL" in rev:
             titulo("6b. Acción sugerida para los casos de REVISAR")
-            orden_a = ["Corregir inventario", "Notificar al área comercial", "Subempacar", "Evaluar subempaque",
+            orden_a = ["Corregir inventario", "Notificar al área comercial", "Revisar pronóstico (planificación de demanda)", "Subempacar", "Evaluar subempaque",
                        "Sin solución operativa (mapeado)", "Informativo"]
             filas = []
             for k in orden_a:
@@ -1165,11 +1182,15 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Regla 3 · promedio < % de la Exhibición", f"{p.factor_prom_exhi:.0%}"),
             ("Regla 4 · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
             ("Pronóstico lineal: valores únicos en 12 días <=", p.umbral_unicos),
+            ("Filtro 2 · activar 'pronóstico total < exhibición'", "Sí" if p.usar_total_menor_exhi else "No"),
+            ("Filtro 2 · pronóstico total < (veces la Exhibición)", p.factor_total_exhi),
             ("Exhibición cubre menos de (días)", p.umbral_dg_exhi),
             ("Usar el mayor intervalo real entre despachos", "Sí" if p.usar_frec_efectiva else "No"),
             ("Cobertura adicional del Max (días)", p.dias_cobertura_max),
             ("Sobre stock crítico: Max cubre más de (días)", p.sobrestock_dias),
             ("Incongruencia: consumo >= (veces la Exhibición)", p.factor_consumo_exhi),
+            ("Pronóstico subestima: consumo >= (veces el promedio del pronóstico)", p.factor_consumo_vs_pron),
+            ("Pronóstico subestima: consumo real al menos (u/día)", p.consumo_min_subestima),
             ("Subempaque · días para vender un empaque completo >", p.sub_dias_venta_empaque),
             ("Subempaque · PVP alto >=", p.pvp_alto),
             ("Subempaque · exigir PVP alto (filtro obligatorio)", "Sí" if p.exigir_pvp_alto else "No"),
