@@ -138,7 +138,7 @@ ESC_REV = alt.Scale(domain=["Sí", "Informativo", "No"], range=[C_MINMAX, C_AMBA
 _P0 = Params()
 DEFAULTS = {
     "dias_transcurridos": 5, "factor_prom_exhi": 0.55, "pct_empaque_cobertura": 0.50, "umbral_unicos": 5,
-    "usar_total_menor_exhi": True, "factor_total_exhi": 1.0, "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
+    "usar_retencion_inventario": True, "dias_holgura_inventario": 2.0, "usar_total_menor_exhi": True, "factor_total_exhi": 1.0, "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
     "dias_seguridad_min": 0.0, "usar_consumo_anterior": False, "dias_mes_anterior": 30, "usar_frec_efectiva": False, "dias_cobertura_max": 0.0,
     "umbral_venta_prom_dia": 1.0, "sobrestock_dias": 20.0, "consumo_bajo_exhi": 0.5,
     "pct_exhi_en_cobertura": 0.80, "factor_consumo_exhi": 3.0, "sub_dias_venta_empaque": 12.0,
@@ -189,6 +189,15 @@ with st.sidebar:
             "Para convertir el consumo total del mes anterior en consumo diario (total ÷ días).")
 
     with st.expander("2 · Qué pasa de TDF a Min/Max"):
+        p.usar_retencion_inventario = st.checkbox(
+            "Dejar en TDF si el inventario sostiene la exhibición", key="p_usar_retencion_inventario",
+            help="Solo para pronóstico normal (ni cero ni lineal). Si el INV NETO se mantiene por encima de la exhibición durante la frecuencia "
+                 "de despacho más la holgura, el producto se queda en TDF: todavía no hace falta Min/Max. Se vuelve a evaluar en cada corrida. "
+                 "Si INV NETO es 0 o negativo, no se retiene.")
+        p.dias_holgura_inventario = num(
+            "Holgura del inventario (días sobre la frecuencia de despacho)", "dias_holgura_inventario", 0.0, 30.0,
+            "Días extra que el inventario debe sostener la exhibición, además de la frecuencia de despacho. Pon cada cuántos días corres el programa "
+            "(2 si lo corres cada 2 días). La velocidad de consumo usada es la mayor entre el consumo real y el promedio pronosticado.", step=1.0)
         p.usar_total_menor_exhi = st.checkbox(
             "Pasa si el pronóstico total no cubre la exhibición", key="p_usar_total_menor_exhi",
             help="Filtro 2 (siempre pasa, sin importar las reglas 3 y 4): si la suma del pronóstico de los 12 días es menor a la "
@@ -502,21 +511,23 @@ with t_res:
 
     seg = pd.DataFrame({
         "Segmento": ["Pronóstico cero", "Pronóstico lineal", "Total no cubre la exhibición", "Reglas 3 + 4 (promedio bajo)",
+                     "Retenido: el inventario sostiene la exhibición",
                      "Rescatado: el forecast cubre el empaque", "Pronóstico normal"],
         "Filas": [r["segmento_1_pasa_pronostico_cero"], r["segmento_2_pasa_pronostico_lineal"],
-                  r["segmento_2b_pasa_total_menor_exhibicion"], r["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], r["segmento_4_tdf_rescatado_por_cobertura_empaque"],
+                  r["segmento_2b_pasa_total_menor_exhibicion"], r["segmento_3_pasa_prom_exhi_y_cobertura_empaque"],
+                  r["segmento_3b_tdf_retenido_por_inventario"], r["segmento_4_tdf_rescatado_por_cobertura_empaque"],
                   r["segmento_5_tdf_pronostico_normal"]],
-        "Destino": ["Pasa a Min/Max"] * 4 + ["Se queda en TDF"] * 2})
+        "Destino": ["Pasa a Min/Max"] * 4 + ["Se queda en TDF"] * 3})
     g1, g2 = st.columns([1.7, 1])
     with g1:
         grafico("Qué pasa con cada fila del BI", "Cuántas pasan a Min/Max y por qué vía; el resto se queda en TDF.",
-                barras_h(seg, "Segmento", "Filas", "Destino", ESC_DESTINO, orden=list(seg["Segmento"]), alto=250))
+                barras_h(seg, "Segmento", "Filas", "Destino", ESC_DESTINO, orden=list(seg["Segmento"]), alto=285))
     with g2:
         dona = pd.DataFrame({"Destino": ["Pasa a Min/Max", "Se queda en TDF"], "Filas": [n_mm, total_bi - n_mm]})
         dona["Porcentaje"] = dona["Filas"] / max(total_bi, 1)
         ch = alt.Chart(dona).mark_arc(innerRadius=58, stroke="rgba(0,0,0,0)").encode(
             theta="Filas:Q", color=alt.Color("Destino:N", scale=ESC_DESTINO, legend=alt.Legend(title=None, orient="bottom")),
-            tooltip=["Destino:N", alt.Tooltip("Filas:Q", format=","), alt.Tooltip("Porcentaje:Q", format=".1%")]).properties(height=250)
+            tooltip=["Destino:N", alt.Tooltip("Filas:Q", format=","), alt.Tooltip("Porcentaje:Q", format=".1%")]).properties(height=285)
         grafico("Proporción del BI", "Destino de las filas", ch)
 
     g3, g4, g5 = st.columns(3)

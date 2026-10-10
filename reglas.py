@@ -33,6 +33,8 @@ vías; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
 3. **Promedio del pronóstico < {p.factor_prom_exhi:.0%} de la exhibición:** `promedio diario del pronóstico < {p.factor_prom_exhi:.0%} × Exhi`.
 4. **El forecast no cubre ni la mitad del empaque final:** `promedio diario × (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} × Empq_final`.
 
+**Excepción por inventario (solo pronóstico normal):** si el producto cumple el filtro 2b o las reglas 3 y 4 pero su **INV NETO se mantiene por encima de la exhibición** durante la frecuencia de despacho más {p.dias_holgura_inventario:g} días de holgura, **se queda en TDF**{"" if p.usar_retencion_inventario else " **(desactivado ahora)**"}: todavía no hace falta Min/Max, y se vuelve a evaluar en la próxima corrida. Fórmula: `INV NETO − max(consumo real, promedio pronosticado) × (FREC + {p.dias_holgura_inventario:g}) ≥ Exhi`. Con INV NETO ≤ 0 nunca se retiene. Pronóstico cero y lineal no se retienen: pasan siempre.
+
 Si cumple la regla 3 pero el forecast **sí** cubre la mitad del empaque final (regla 4 no se cumple), **se queda en TDF**.
 Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del empaque final o más, TDF puede despachar con ese forecast.
 
