@@ -28,8 +28,7 @@ class Params:
     umbral_unicos: int = 5               # pronóstico "lineal": de los 12 días, 5 o menos valores únicos (menos de 6 que no se repiten)
     usar_total_menor_exhi: bool = True   # filtro 2: el pronóstico total de los días no cubre ni la exhibición -> pasa a Min/Max
     factor_total_exhi: float = 1.0       # ... TOTAL PRONOSTICO < factor x Exhi (1.0 = no cubre ni una exhibición)
-    usar_retencion_inventario: bool = True  # pronóstico normal con inventario suficiente para sostener la exhibición se queda en TDF
-    dias_holgura_inventario: float = 2.0    # días extra (además de la frecuencia de despacho) que el inventario debe sostener la exhibición (= cada cuántos días se corre el programa)
+    usar_retencion_inventario: bool = True  # pronóstico normal cuyo inventario cubre la exhibición + el consumo hasta la próxima entrega se queda en TDF
     factor_prom_exhi: float = 0.55       # regla 3: promedio diario del pronóstico < 55 % de la Exhibición ...
     pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
     # --- Cálculo del Min ---
@@ -367,11 +366,11 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     cand = r_tot | r34                                      # candidatas por pronóstico bajo
     normal = ~cero & ~lineal                                # pronóstico normal (ni cero ni lineal)
     if p.usar_retencion_inventario and "INV NETO" in df.columns:
-        # Retención por inventario: si el inventario se mantiene sobre la exhibición durante la frecuencia de despacho + holgura
-        # (con la velocidad de consumo más alta entre el consumo real y el promedio pronosticado), TDF se queda.
+        # Retención por inventario: si INV NETO cubre la exhibición + el consumo hasta la próxima entrega (frecuencia entre despachos;
+        # las entregas llegan el mismo día programado), con la velocidad de consumo más alta entre el consumo real y el promedio pronosticado, TDF se queda.
         inv_v = pd.to_numeric(df["INV NETO"], errors="coerce").fillna(0).values
         vel = np.maximum(df["CONSUMO DIA"].values, prom_v)
-        retenido = cand & normal & (inv_v > 0) & (inv_v - vel * (df["FREC EFECTIVA"].values + p.dias_holgura_inventario) >= exhi_v)
+        retenido = cand & normal & (inv_v > 0) & (inv_v - vel * df["FREC EFECTIVA"].values >= exhi_v)
     else:
         retenido = np.zeros(len(df), dtype=bool)
     cond_mm = cero | lineal | (cand & ~retenido)
@@ -832,7 +831,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (de los 12 días, menos de {p.umbral_unicos + 1} valores únicos; si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana: valores únicos <= valores repetidos); {'(2b) el pronóstico total de los días es menor a ' + format(p.factor_total_exhi, 'g') + ' x la Exhibición (no cubre ni la exhibición); ' if p.usar_total_menor_exhi else ''}o (3 y 4 juntas) el promedio diario del "
                                f"pronóstico es menor al {p.factor_prom_exhi:.0%} de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el {p.pct_empaque_cobertura:.0%} del "
                                "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero, lineal y 'no cubre la exhibición' pasan siempre. "
-                               + (f"Excepción: un producto con pronóstico normal se queda en TDF si su INV NETO se mantiene sobre la Exhi durante la frecuencia de despacho + {p.dias_holgura_inventario:g} días de holgura, "
+                               + (f"Excepción: un producto con pronóstico normal se queda en TDF si su INV NETO cubre la Exhi más el consumo hasta la próxima entrega (frecuencia entre despachos), "
                                   "con la velocidad de consumo mayor entre el consumo real y el promedio pronosticado." if p.usar_retencion_inventario else "")),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
         ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos. "
@@ -1262,7 +1261,6 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Regla 4 · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
             ("Pronóstico lineal: valores únicos en 12 días <=", p.umbral_unicos),
             ("Retener en TDF si el inventario sostiene la exhibición", "Sí" if p.usar_retencion_inventario else "No"),
-            ("Holgura del inventario (días sobre la frecuencia de despacho)", p.dias_holgura_inventario),
             ("Filtro 2 · activar 'pronóstico total < exhibición'", "Sí" if p.usar_total_menor_exhi else "No"),
             ("Filtro 2 · pronóstico total < (veces la Exhibición)", p.factor_total_exhi),
             ("Días de seguridad sobre la frecuencia de despacho (Min)", p.dias_seguridad_min),

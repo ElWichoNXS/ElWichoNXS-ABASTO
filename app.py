@@ -138,7 +138,7 @@ ESC_REV = alt.Scale(domain=["Sí", "Informativo", "No"], range=[C_MINMAX, C_AMBA
 _P0 = Params()
 DEFAULTS = {
     "dias_transcurridos": 5, "factor_prom_exhi": 0.55, "pct_empaque_cobertura": 0.50, "umbral_unicos": 5,
-    "usar_retencion_inventario": True, "dias_holgura_inventario": 2.0, "usar_total_menor_exhi": True, "factor_total_exhi": 1.0, "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
+    "usar_retencion_inventario": True, "usar_total_menor_exhi": True, "factor_total_exhi": 1.0, "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
     "dias_seguridad_min": 0.0, "usar_consumo_anterior": False, "dias_mes_anterior": 30, "usar_frec_efectiva": False, "dias_cobertura_max": 0.0,
     "umbral_venta_prom_dia": 1.0, "sobrestock_dias": 20.0, "consumo_bajo_exhi": 0.5,
     "pct_exhi_en_cobertura": 0.80, "factor_consumo_exhi": 3.0, "sub_dias_venta_empaque": 12.0,
@@ -190,14 +190,10 @@ with st.sidebar:
 
     with st.expander("2 · Qué pasa de TDF a Min/Max"):
         p.usar_retencion_inventario = st.checkbox(
-            "Dejar en TDF si el inventario sostiene la exhibición", key="p_usar_retencion_inventario",
-            help="Solo para pronóstico normal (ni cero ni lineal). Si el INV NETO se mantiene por encima de la exhibición durante la frecuencia "
-                 "de despacho más la holgura, el producto se queda en TDF: todavía no hace falta Min/Max. Se vuelve a evaluar en cada corrida. "
-                 "Si INV NETO es 0 o negativo, no se retiene.")
-        p.dias_holgura_inventario = num(
-            "Holgura del inventario (días sobre la frecuencia de despacho)", "dias_holgura_inventario", 0.0, 30.0,
-            "Días extra que el inventario debe sostener la exhibición, además de la frecuencia de despacho. Pon cada cuántos días corres el programa "
-            "(2 si lo corres cada 2 días). La velocidad de consumo usada es la mayor entre el consumo real y el promedio pronosticado.", step=1.0)
+            "Dejar en TDF si el inventario cubre la exhibición", key="p_usar_retencion_inventario",
+            help="Solo para pronóstico normal (ni cero ni lineal). Si el INV NETO cubre la exhibición más el consumo hasta la próxima entrega "
+                 "(frecuencia entre despachos), el producto se queda en TDF: todavía no hace falta Min/Max. Se vuelve a evaluar en cada corrida. "
+                 "La velocidad de consumo es la mayor entre el consumo real y el promedio pronosticado. Con INV NETO en 0 o negativo no se retiene.")
         p.usar_total_menor_exhi = st.checkbox(
             "Pasa si el pronóstico total no cubre la exhibición", key="p_usar_total_menor_exhi",
             help="Filtro 2 (siempre pasa, sin importar las reglas 3 y 4): si la suma del pronóstico de los 12 días es menor a la "
