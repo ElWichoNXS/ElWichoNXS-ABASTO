@@ -51,7 +51,7 @@ Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `VALORES U
 
 `CONSUMO DIA = CONSUMOS ACU ÷ {p.dias_transcurridos} días transcurridos`
 
-**Consumo del mes anterior (opcional).** Con pocos días transcurridos el consumo del mes es poco confiable. Si cargas el archivo del mes anterior (por local e ítem) y los días transcurridos son **menos de {p.dias_min_consumo_actual}**, la base del consumo diario es `consumo del mes anterior ÷ {p.dias_mes_anterior} días`. Donde no hay dato del mes anterior se sigue usando el consumo del mes actual. La columna `FUENTE CONSUMO` del Excel indica cuál se usó en cada fila.
+**Consumo del mes anterior (opcional).** Con pocos días transcurridos el consumo del mes es poco confiable. Si cargas el archivo del mes anterior (por local e ítem) **y marcas la casilla «Usar el consumo del mes anterior»**{"" if p.usar_consumo_anterior else " (ahora **desmarcada**)"}, la base del consumo diario es `consumo del mes anterior ÷ {p.dias_mes_anterior} días`. Donde no hay dato del mes anterior, o si la casilla está desmarcada, se usa el consumo del BI. La columna `FUENTE CONSUMO` del Excel indica cuál se usó en cada fila.
 
 **APTO.** Se toma del maestro de productos (columna *Apto para PTL*). Si no cargas el maestro,
 se asume "Si" para todos y la regla B del Min puede aplicarse a más productos de los debidos.

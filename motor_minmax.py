@@ -32,7 +32,7 @@ class Params:
     pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
     # --- Cálculo del Min ---
     dias_seguridad_min: float = 0.0      # días extra de consumo sobre la frecuencia de despacho para el Min (0 = solo cubrir hasta el próximo despacho)
-    dias_min_consumo_actual: int = 7     # si los días transcurridos son menos que esto, y hay consumo del mes anterior, ese es la base del consumo diario
+    usar_consumo_anterior: bool = False  # True: la base del consumo diario es el consumo del mes anterior (archivo cargado), donde haya dato por local e ítem
     dias_mes_anterior: int = 30          # días del mes anterior (para pasar su consumo total a consumo diario)
     usar_frec_efectiva: bool = False     # False: FREC del BI (promedio). True: MAYOR intervalo real entre despachos
     # --- Cálculo del Max ---
@@ -403,13 +403,12 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     # 4) Consumo diario --------------------------------------------------------
     R_act = df["CONSUMOS ACU"].astype(float) / p.dias_transcurridos
     R = R_act
-    usa_ant = consumo_ant is not None
+    usa_ant = consumo_ant is not None and p.usar_consumo_anterior
     if usa_ant:
-        # Con pocos días transcurridos el consumo del mes es poco confiable: la base es el consumo diario del mes anterior
-        # (solo donde hay dato; el resto sigue con el consumo del mes actual).
+        # El usuario eligió usar el consumo del mes anterior: es la base donde hay dato; el resto sigue con el consumo del BI.
         llave = df[["Local", "ESTADISTICO"]].merge(consumo_ant, on=["Local", "ESTADISTICO"], how="left")
         r_ant = pd.Series((llave["CONSUMO_ANT"] / p.dias_mes_anterior).values, index=df.index)
-        usar = (p.dias_transcurridos < p.dias_min_consumo_actual) & r_ant.notna()
+        usar = r_ant.notna()
         R = pd.Series(np.where(usar, r_ant, R_act), index=df.index)
         df["CONSUMO DIA MES ANTERIOR"] = r_ant
         df["FUENTE CONSUMO"] = np.where(usar, "Mes anterior", np.where(r_ant.isna(), "Mes actual (sin dato del mes anterior)", "Mes actual"))
@@ -820,7 +819,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
                                "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero, lineal y 'no cubre la exhibición' pasan siempre."),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
         ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos. "
-                       f"Si hay archivo del mes anterior y los días transcurridos son menos de {p.dias_min_consumo_actual}, la base es el consumo del mes anterior / {p.dias_mes_anterior} días (donde haya dato)."),
+                       + (f" Se usó el consumo del mes anterior / {p.dias_mes_anterior} días como base (donde hay dato por local e ítem)." if p.usar_consumo_anterior else "")),
         ("FREC", f"Días entre despachos: {frec}."),
         ("Min · regla A", "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)."),
         ("Min · regla B", f"Si el producto es apto y la Exhi no alcanza hasta el próximo despacho (CONSUMO DIA x FREC{' + ' + format(p.dias_seguridad_min, 'g') + ' días de seguridad' if p.dias_seguridad_min > 0 else ''} > Exhi): Min = ROUND(CONSUMO DIA x FREC; 0)."),
@@ -1247,7 +1246,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Filtro 2 · activar 'pronóstico total < exhibición'", "Sí" if p.usar_total_menor_exhi else "No"),
             ("Filtro 2 · pronóstico total < (veces la Exhibición)", p.factor_total_exhi),
             ("Días de seguridad sobre la frecuencia de despacho (Min)", p.dias_seguridad_min),
-            ("Consumo del mes anterior como base si los días transcurridos son menos de", p.dias_min_consumo_actual),
+            ("Usar el consumo del mes anterior como base", "Sí" if p.usar_consumo_anterior else "No"),
             ("Días del mes anterior", p.dias_mes_anterior),
             ("Usar el mayor intervalo real entre despachos", "Sí" if p.usar_frec_efectiva else "No"),
             ("Cobertura adicional del Max (días)", p.dias_cobertura_max),
