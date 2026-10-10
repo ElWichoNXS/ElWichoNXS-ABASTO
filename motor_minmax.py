@@ -31,7 +31,9 @@ class Params:
     factor_prom_exhi: float = 0.55       # regla 3: promedio diario del pronóstico < 55 % de la Exhibición ...
     pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
     # --- Cálculo del Min ---
-    umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura (regla B)
+    dias_seguridad_min: float = 0.0      # días extra de consumo sobre la frecuencia de despacho para el Min (0 = solo cubrir hasta el próximo despacho)
+    dias_min_consumo_actual: int = 7     # si los días transcurridos son menos que esto, y hay consumo del mes anterior, ese es la base del consumo diario
+    dias_mes_anterior: int = 30          # días del mes anterior (para pasar su consumo total a consumo diario)
     usar_frec_efectiva: bool = False     # False: FREC del BI (promedio). True: MAYOR intervalo real entre despachos
     # --- Cálculo del Max ---
     dias_cobertura_max: float = 0.0      # 0 = desactivado (Max = Min + SUBEMPAQUE o EMPAQUE/2)
@@ -215,11 +217,58 @@ def leer_aptos(archivo) -> pd.DataFrame:
     return a2
 
 
+class ColumnasConsumoError(ValueError):
+    """No se pudieron identificar las columnas del archivo de consumo del mes anterior."""
+    def __init__(self, mensaje, todas):
+        super().__init__(mensaje)
+        self.todas = todas
+
+
+def _norm(txt) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(txt)).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def leer_consumo_anterior(archivo, col_local=None, col_item=None, col_consumo=None) -> pd.DataFrame:
+    """Consumo del mes anterior por local e ítem. Devuelve Local, ESTADISTICO, CONSUMO_ANT (total del mes, sumado si hay varias filas).
+    Reconoce columnas como Local/Sucursal, Estadístico/Item/SKU y Consumo/Venta/Unidades; si no las reconoce, pide elegirlas."""
+    a = pd.read_excel(archivo)
+    a.columns = [str(c).strip() for c in a.columns]
+
+    def buscar(candidatos, elegido):
+        if elegido:
+            return elegido
+        for cand in candidatos:                       # primero coincidencia exacta, luego "empieza con"
+            for c in a.columns:
+                if _norm(c) == cand:
+                    return c
+        for cand in candidatos:
+            for c in a.columns:
+                if _norm(c).startswith(cand):
+                    return c
+        return None
+    cl = buscar(["local", "cod local", "codigo local", "sucursal", "tienda", "nro local"], col_local)
+    ci = buscar(["estadistico", "item", "sku", "codigo item", "codigo", "articulo"], col_item)
+    cc = buscar(["consumo mes anterior", "consumos acu", "consumo", "consumos", "venta", "ventas", "unidades", "cantidad"], col_consumo)
+    if not (cl and ci and cc):
+        raise ColumnasConsumoError("No se reconocieron las columnas de Local, Estadístico y Consumo del archivo del mes anterior.", list(a.columns))
+    out = a[[cl, ci, cc]].copy()
+    out.columns = ["Local", "ESTADISTICO", "CONSUMO_ANT"]
+    for c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out = out.dropna(subset=["Local", "ESTADISTICO"])
+    out["CONSUMO_ANT"] = out["CONSUMO_ANT"].fillna(0)
+    out[["Local", "ESTADISTICO"]] = out[["Local", "ESTADISTICO"]].astype("int64")
+    return out.groupby(["Local", "ESTADISTICO"], as_index=False)["CONSUMO_ANT"].sum()
+
+
 # --------------------------------------------------------------------------
 # PROCESO PRINCIPAL
 # --------------------------------------------------------------------------
 def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
-             p: Params | None = None, cols_pronostico: list | None = None):
+             p: Params | None = None, cols_pronostico: list | None = None,
+             consumo_ant: pd.DataFrame | None = None):
     p = p or Params()
     df = df_bi.copy()
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
@@ -352,24 +401,35 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     df["SUBEMPAQUE"] = pd.to_numeric(df["SUBEMPAQUE"], errors="coerce").fillna(0)
 
     # 4) Consumo diario --------------------------------------------------------
-    R = df["CONSUMOS ACU"].astype(float) / p.dias_transcurridos
+    R_act = df["CONSUMOS ACU"].astype(float) / p.dias_transcurridos
+    R = R_act
+    usa_ant = consumo_ant is not None
+    if usa_ant:
+        # Con pocos días transcurridos el consumo del mes es poco confiable: la base es el consumo diario del mes anterior
+        # (solo donde hay dato; el resto sigue con el consumo del mes actual).
+        llave = df[["Local", "ESTADISTICO"]].merge(consumo_ant, on=["Local", "ESTADISTICO"], how="left")
+        r_ant = pd.Series((llave["CONSUMO_ANT"] / p.dias_mes_anterior).values, index=df.index)
+        usar = (p.dias_transcurridos < p.dias_min_consumo_actual) & r_ant.notna()
+        R = pd.Series(np.where(usar, r_ant, R_act), index=df.index)
+        df["CONSUMO DIA MES ANTERIOR"] = r_ant
+        df["FUENTE CONSUMO"] = np.where(usar, "Mes anterior", np.where(r_ant.isna(), "Mes actual (sin dato del mes anterior)", "Mes actual"))
     df["CONSUMO DIA"] = R
     df["% CONSUMO/EMPQ"] = R * df["FREC EFECTIVA"] / df["Empq_final"]
 
     # 5) MIN -------------------------------------------------------------------
     E = df["Exhi"].astype(float)
     F = df["FREC EFECTIVA"].astype(float)
-    ds_exhi = np.where(R > 0, E / R.where(R > 0), np.inf)
+    cobertura = R * (F + p.dias_seguridad_min)                 # lo que se consume hasta el próximo despacho (+ días de seguridad)
 
-    caso_a = R > E                                             # consumo > exhibición
-    caso_b = (~caso_a) & (R * F > E) & (df["APTO"] == "Si") & \
-             (ds_exhi < p.umbral_dg_exhi)
+    caso_a = R > E                                             # consumo diario > exhibición: se agota en menos de un día
+    caso_b = (~caso_a) & (cobertura > E) & (df["APTO"] == "Si")  # la exhibición no alcanza hasta el próximo despacho
 
-    min_ = np.where(caso_a, xround(R * F, 0),
-            np.where(caso_b, xround(R * F, 0), E))
+    min_ = np.where(caso_a, xround(cobertura, 0),
+            np.where(caso_b, xround(cobertura, 0), E))
     df["Min"] = a_entero(min_).values
-    df["_regla_min"] = np.where(caso_a, "A: consumo>exhi -> ROUND(R*FREC,0)",
-                         np.where(caso_b, f"B: exhi<{p.umbral_dg_exhi:g}d cobertura -> ROUND(R*FREC,0)",
+    seg_txt = f"+{p.dias_seguridad_min:g}" if p.dias_seguridad_min > 0 else ""
+    df["_regla_min"] = np.where(caso_a, f"A: consumo>exhi -> ROUND(R*(FREC{seg_txt}),0)",
+                         np.where(caso_b, f"B: exhi no cubre hasta el próximo despacho -> ROUND(R*(FREC{seg_txt}),0)",
                                   "C: Min = Exhi"))
 
     # 6) MAX -------------------------------------------------------------------
@@ -400,6 +460,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         "regla_C": int((~caso_a & ~caso_b).sum()),
         "skus_sin_dato_apto": sin_apto if aptos is not None else None,
         "filas_con_aviso_revisar": int((df["DG EXHI = DG MIN"] == "REVISAR").sum()),
+        "filas_consumo_mes_anterior": int((df["FUENTE CONSUMO"] == "Mes anterior").sum()) if usa_ant else None,
         "frec_efectiva_mayor_que_bi": int((df["FREC EFECTIVA"] > df["FREC ENTRE DESP"]).sum()),
         "pronostico_insuficiente": int(df["DIAG PRONOSTICO"].isin([etq_insuf, "Repetido e insuficiente"]).sum()),
         "pronostico_valores_repetidos": int(df["DIAG PRONOSTICO"].isin(["Valores repetidos", "Repetido e insuficiente"]).sum()),
@@ -415,14 +476,14 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     # orden de columnas: las del BI, con los calculados donde los pones tú
     orden_bi = [c for c in df_bi.columns if isinstance(c, str) and c.strip() in df.columns]
     orden_bi = [c.strip() for c in orden_bi]
-    calc = ["CONSUMO DIA", "APTO", "DIF", "%", "DG MIN", "DGMAX", "CON>EXHI",
+    calc = ["CONSUMO DIA", "CONSUMO DIA MES ANTERIOR", "FUENTE CONSUMO", "APTO", "DIF", "%", "DG MIN", "DGMAX", "CON>EXHI",
             "DG EXHIBICION", "DG EXHI = DG MIN", "TOTAL PRONOSTICO", "UNICOS", "VALORES UNICOS SEM1", "VALORES REPETIDOS SEM1", "SEMANA COPIADA", "_LINEAL", "_regla_min", "_sin_pronostico"]
     base = [c for c in orden_bi if c not in ("Min", "Max") and c not in calc]
     cols = []
     for c in base:
         cols.append(c)
         if c == "Físico":
-            cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
+            cols += ["CONSUMO DIA"] + (["CONSUMO DIA MES ANTERIOR", "FUENTE CONSUMO"] if usa_ant else []) + ["APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
                      "FREC EFECTIVA", "PROMEDIO PRONOSTICO DIA", "TOTAL PRONOSTICO", "UNICOS", "VALORES UNICOS SEM1", "VALORES REPETIDOS SEM1", "SEMANA COPIADA", "% CONSUMO/EMPQ",
                      "PRON CICLO", "DIAG PRONOSTICO", "% PROM/EXHI", "COBERTURA TDF", "% COBERTURA/EMPQ", "MOTIVO MIN/MAX"]
         if c == "Exhi":
@@ -758,10 +819,11 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
                                f"pronóstico es menor al {p.factor_prom_exhi:.0%} de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el {p.pct_empaque_cobertura:.0%} del "
                                "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero, lineal y 'no cubre la exhibición' pasan siempre."),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
-        ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos."),
+        ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos. "
+                       f"Si hay archivo del mes anterior y los días transcurridos son menos de {p.dias_min_consumo_actual}, la base es el consumo del mes anterior / {p.dias_mes_anterior} días (donde haya dato)."),
         ("FREC", f"Días entre despachos: {frec}."),
         ("Min · regla A", "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)."),
-        ("Min · regla B", f"Si el producto es apto, la Exhi cubre menos de {p.umbral_dg_exhi:g} días y CONSUMO DIA x FREC > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)."),
+        ("Min · regla B", f"Si el producto es apto y la Exhi no alcanza hasta el próximo despacho (CONSUMO DIA x FREC{' + ' + format(p.dias_seguridad_min, 'g') + ' días de seguridad' if p.dias_seguridad_min > 0 else ''} > Exhi): Min = ROUND(CONSUMO DIA x FREC; 0)."),
         ("Min · regla C", "Cualquier otro caso (la mayoría): Min = Exhi."),
         ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
                 f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
@@ -826,7 +888,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                "FREC ENTRE DESP", "Físico", "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
         pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
         dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION",
-               "CONSUMO DIA", "%", "PROMEDIO PRONOSTICO DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO",
+               "CONSUMO DIA", "CONSUMO DIA MES ANTERIOR", "%", "PROMEDIO PRONOSTICO DIA", "PRON CICLO", "CONSUMO CICLO", "FALTANTE VS CICLO",
                "DIAS INVENTARIO", "COBERTURA MAX (DIAS)", "COBERTURA EXHI (DIAS)", "REDUCCION VALOR",
                "TOTAL PRONOSTICO"}
         dos_dec = {"PVP", "REDUCCION VALOR"}
@@ -1184,7 +1246,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Pronóstico lineal: valores únicos en 12 días <=", p.umbral_unicos),
             ("Filtro 2 · activar 'pronóstico total < exhibición'", "Sí" if p.usar_total_menor_exhi else "No"),
             ("Filtro 2 · pronóstico total < (veces la Exhibición)", p.factor_total_exhi),
-            ("Exhibición cubre menos de (días)", p.umbral_dg_exhi),
+            ("Días de seguridad sobre la frecuencia de despacho (Min)", p.dias_seguridad_min),
+            ("Consumo del mes anterior como base si los días transcurridos son menos de", p.dias_min_consumo_actual),
+            ("Días del mes anterior", p.dias_mes_anterior),
             ("Usar el mayor intervalo real entre despachos", "Sí" if p.usar_frec_efectiva else "No"),
             ("Cobertura adicional del Max (días)", p.dias_cobertura_max),
             ("Sobre stock crítico: Max cubre más de (días)", p.sobrestock_dias),

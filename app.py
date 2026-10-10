@@ -9,8 +9,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from motor_minmax import (ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
-                          leer_bi, marcar_en_revision, marcar_revision, procesar, sugerir_subempaque)
+from motor_minmax import (ColumnasConsumoError, ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
+                          leer_bi, leer_consumo_anterior, marcar_en_revision, marcar_revision, procesar, sugerir_subempaque)
 from reglas import mostrar_reglas
 
 st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon="📦", layout="wide")
@@ -137,7 +137,7 @@ _P0 = Params()
 DEFAULTS = {
     "dias_transcurridos": 5, "factor_prom_exhi": 0.55, "pct_empaque_cobertura": 0.50, "umbral_unicos": 5,
     "usar_total_menor_exhi": True, "factor_total_exhi": 1.0, "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
-    "umbral_dg_exhi": 2.0, "usar_frec_efectiva": False, "dias_cobertura_max": 0.0,
+    "dias_seguridad_min": 0.0, "dias_min_consumo_actual": 7, "dias_mes_anterior": 30, "usar_frec_efectiva": False, "dias_cobertura_max": 0.0,
     "umbral_venta_prom_dia": 1.0, "sobrestock_dias": 20.0, "consumo_bajo_exhi": 0.5,
     "pct_exhi_en_cobertura": 0.80, "factor_consumo_exhi": 3.0, "sub_dias_venta_empaque": 12.0,
     "pvp_alto": 5.0, "exigir_pvp_alto": True, "exigir_apto_subempaque": True, "min_empaque_sugerir_sub": 7,
@@ -178,6 +178,14 @@ with st.sidebar:
             "CONSUMO DIA. Ejemplo: si hoy es 7 de octubre y el BI llega hasta ayer, son 6 días. "
             "Cámbialo cada vez que descargues el BI.")
 
+        p.dias_min_consumo_actual = num(
+            "Usar el consumo del mes anterior si los días transcurridos son menos de", "dias_min_consumo_actual", 1, 31,
+            "Solo se usa si cargas el archivo del mes anterior. Con menos días que este número, la base del consumo diario es "
+            "el consumo del mes anterior (donde haya dato por local e ítem).")
+        p.dias_mes_anterior = num(
+            "Días del mes anterior", "dias_mes_anterior", 28, 31,
+            "Para convertir el consumo total del mes anterior en consumo diario (total ÷ días).")
+
     with st.expander("2 · Qué pasa de TDF a Min/Max"):
         p.usar_total_menor_exhi = st.checkbox(
             "Pasa si el pronóstico total no cubre la exhibición", key="p_usar_total_menor_exhi",
@@ -208,10 +216,10 @@ with st.sidebar:
             "es lineal si los valores únicos no superan a los repetidos. Así una semana normal que se copia no cuenta como lineal.")
 
     with st.expander("3 · Cálculo del Min"):
-        p.umbral_dg_exhi = num(
-            "Exhibición cubre menos de (días)", "umbral_dg_exhi", 0.5, 10.0,
-            "Regla B del Min. Si los días que cubre la exhibición (Exhi ÷ consumo diario) son menos que "
-            "este valor, el Min sube a cubrir la frecuencia de despacho.", step=0.5)
+        p.dias_seguridad_min = num(
+            "Días de seguridad sobre la frecuencia de despacho", "dias_seguridad_min", 0.0, 10.0,
+            "El Min sube hasta cubrir el consumo de los días hasta el próximo despacho (la frecuencia de despacho de cada local) "
+            "cuando la exhibición no alcanza. Aquí puedes sumar días extra de colchón. 0 = cubrir exactamente hasta el próximo despacho.", step=0.5)
         p.usar_frec_efectiva = st.checkbox(
             "Usar el mayor intervalo real entre despachos", key="p_usar_frec_efectiva",
             help="Apagado (recomendado): se usa FREC ENTRE DESP tal como viene del BI (promedio de días entre "
@@ -308,11 +316,12 @@ with st.sidebar:
 # Cálculo (en caché: filtrar tablas no vuelve a procesar el BI)
 # ----------------------------------------------------------------------
 @st.cache_data(show_spinner=False, max_entries=3)
-def calcular(bytes_bi, bytes_ap, params, cols_pronostico):
+def calcular(bytes_bi, bytes_ap, params, cols_pronostico, bytes_ant=None, mapa_ant=None):
     p = Params(**params)
     bi = leer_bi(io.BytesIO(bytes_bi))
     aptos = leer_aptos(io.BytesIO(bytes_ap)) if bytes_ap else None
-    salida, r = procesar(bi, aptos, p, cols_pronostico=list(cols_pronostico) if cols_pronostico else None)
+    ant = leer_consumo_anterior(io.BytesIO(bytes_ant), *(mapa_ant or (None, None, None))) if bytes_ant else None
+    salida, r = procesar(bi, aptos, p, cols_pronostico=list(cols_pronostico) if cols_pronostico else None, consumo_ant=ant)
     rev = marcar_revision(salida, p)
     salida = marcar_en_revision(salida, rev)
     sug = sugerir_subempaque(salida, p)
@@ -397,9 +406,12 @@ if st.session_state["ver_reglas"]:
 
 # ---------------- Carga ----------------
 seccion("Carga de archivos", "Sube el BI y, opcionalmente, el maestro de productos aptos")
-c1, c2 = st.columns(2)
+c1, c2, c3 = st.columns(3)
 f_bi = c1.file_uploader("1) Excel del BI (obligatorio)", type=["xlsx"], key="f_bi")
 f_ap = c2.file_uploader("2) Maestro de productos (columnas 'Estadístico' y 'Apto para PTL')", type=["xlsx"], key="f_ap")
+f_ant = c3.file_uploader("3) Consumo del mes anterior por local e ítem (opcional)", type=["xlsx"], key="f_ant",
+                         help="Columnas: Local, Estadístico y Consumo (total del mes). Se usa como base del consumo diario cuando los días "
+                              "transcurridos del mes son pocos (ver parámetro del grupo 1).")
 
 if not f_bi:
     st.markdown('<div class="nota">Sube el Excel del BI para ver el resumen, los casos a revisar y descargar el archivo procesado. '
@@ -408,11 +420,23 @@ if not f_bi:
 
 bytes_bi = f_bi.getvalue()
 bytes_ap = f_ap.getvalue() if f_ap else None
+bytes_ant = f_ant.getvalue() if f_ant else None
 params = asdict(p)
 cols_man = None
+mapa_ant = None
+if bytes_ant:
+    try:
+        leer_consumo_anterior(io.BytesIO(bytes_ant))
+    except ColumnasConsumoError as e:
+        st.error(f"{e} Elige las columnas.")
+        cc1, cc2, cc3 = st.columns(3)
+        m_loc = cc1.selectbox("Columna de Local", e.todas, key="m_loc")
+        m_item = cc2.selectbox("Columna de Estadístico / ítem", e.todas, key="m_item")
+        m_cons = cc3.selectbox("Columna de consumo del mes", e.todas, key="m_cons")
+        mapa_ant = (m_loc, m_item, m_cons)
 try:
     with st.spinner("Procesando el BI…"):
-        salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, cols_man)
+        salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, cols_man, bytes_ant, mapa_ant)
 except ColumnasPronosticoError as e:
     st.error(f"{e} Elige abajo las columnas del pronóstico diario.")
     elegidas = st.multiselect(
@@ -424,7 +448,7 @@ except ColumnasPronosticoError as e:
         st.stop()
     try:
         with st.spinner("Procesando el BI…"):
-            salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, tuple(elegidas))
+            salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, tuple(elegidas), bytes_ant, mapa_ant)
     except ValueError as e2:
         st.error(str(e2))
         st.stop()
@@ -435,6 +459,12 @@ except ValueError as e:
 if r["dias_de_pronostico"] < 12:
     st.info(f"El BI trae **{r['dias_de_pronostico']} días de pronóstico** (no 12). El promedio diario se calcula dividiendo para "
             f"{r['dias_de_pronostico']}. Columnas usadas: {r['columnas_pronostico_usadas']}.")
+if r.get("filas_consumo_mes_anterior") is not None:
+    st.info(f"Consumo del mes anterior: se usó como base en **{n(r['filas_consumo_mes_anterior'])}** de {n(r['filas_resultado'])} filas "
+            f"(días transcurridos {p.dias_transcurridos}, umbral {p.dias_min_consumo_actual}). El resto no tiene dato y usa el mes actual."
+            if p.dias_transcurridos < p.dias_min_consumo_actual else
+            f"Archivo del mes anterior cargado, pero los días transcurridos ({p.dias_transcurridos}) no son menos de "
+            f"{p.dias_min_consumo_actual}: se usa el consumo del mes actual.")
 if not f_ap:
     st.info("Sin maestro de productos: se asumió APTO = 'Si' para todos. Afecta la regla B del Min y las "
             "sugerencias de subempaque (no se descarta ningún producto por no ser apto).")
