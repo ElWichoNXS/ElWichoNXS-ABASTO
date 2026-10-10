@@ -27,7 +27,7 @@ class Params:
     # --- Qué filas pasan de TDF a Min/Max ---
     factor_prom_exhi: float = 0.55       # regla 3: promedio diario del pronóstico < 55 % de la Exhibición ...
     pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
-    umbral_unicos: int = 5               # pronóstico "lineal": UNICOS <= 5 (valores repetidos / planos = poco confiable)
+    dias_repetidos_lineal: int = 7       # pronóstico "lineal": en la PRIMERA semana (7 días) al menos N días repiten valor (7 = toda la semana)
     # --- Cálculo del Min ---
     umbral_dg_exhi: float = 2.0          # Exhi/consumo < 2 días -> sube a cobertura (regla B)
     usar_frec_efectiva: bool = False     # False: FREC del BI (promedio). True: MAYOR intervalo real entre despachos
@@ -250,6 +250,12 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     unicos = (igual == 1).sum(axis=1)
     df["TOTAL PRONOSTICO"] = np.round(suma, 4)
     df["UNICOS"] = unicos
+    # Pronóstico LINEAL: se mira solo la primera semana (días 1-7). Que desde el día 8 el modelo copie la semana
+    # no es linealidad; lineal es que en los 7 primeros días el valor se repita (ventas todos los días).
+    V7 = V[:, :7]
+    igual7 = (V7[:, :, None] == V7[:, None, :]).sum(axis=2)
+    dias_rep = (igual7 >= 2).sum(axis=1)                     # días de la semana 1 que comparten valor con otro día
+    df["DIAS REPETIDOS SEM1"] = dias_rep
     sin_pron = np.all(np.isnan(V), axis=1)
 
     # Filtro TDF -> Min/Max. Pasa a Min/Max si:
@@ -263,7 +269,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     prom_v = suma / n_dias
     cob_v = prom_v * (df["FREC EFECTIVA"].values + df["Dias SS"].values)    # unidades que cubre el forecast hasta el próximo despacho + SS
     cero = suma == 0
-    lineal = unicos <= p.umbral_unicos
+    lineal = dias_rep >= p.dias_repetidos_lineal
     r3 = prom_v < p.factor_prom_exhi * exhi_v
     r4 = cob_v < p.pct_empaque_cobertura * df["Empq_final"].values
     r34 = r3 & r4
@@ -304,10 +310,11 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     df["PRON CICLO"] = np.round(cum[np.arange(len(df)), idx], 2)      # venta pronosticada hasta el próximo despacho
     df["PROMEDIO PRONOSTICO DIA"] = np.round(df["TOTAL PRONOSTICO"] / n_dias, 2)
     insuf = df["PROMEDIO PRONOSTICO DIA"] < p.umbral_venta_prom_dia
-    rep = df["UNICOS"] <= p.umbral_unicos
+    rep = df["DIAS REPETIDOS SEM1"] >= p.dias_repetidos_lineal
+    etq_insuf = f"Insuficiente (<{p.umbral_venta_prom_dia:g} u/día)"
     df["DIAG PRONOSTICO"] = np.select(
         [df["_sin_pronostico"], rep & insuf, rep, insuf],
-        ["Sin pronóstico", "Repetido e insuficiente", "Valores repetidos", "Insuficiente (<1 u/día)"],
+        ["Sin pronóstico", "Repetido e insuficiente", "Valores repetidos", etq_insuf],
         default="Pronóstico normal")
 
     # 3) SUBEMPAQUE: se respeta el del BI (lo que el sistema realmente tiene configurado).
@@ -333,7 +340,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
             np.where(caso_b, xround(R * F, 0), E))
     df["Min"] = a_entero(min_).values
     df["_regla_min"] = np.where(caso_a, "A: consumo>exhi -> ROUND(R*FREC,0)",
-                         np.where(caso_b, "B: exhi<2d cobertura -> ROUND(R*FREC,0)",
+                         np.where(caso_b, f"B: exhi<{p.umbral_dg_exhi:g}d cobertura -> ROUND(R*FREC,0)",
                                   "C: Min = Exhi"))
 
     # 6) MAX -------------------------------------------------------------------
@@ -365,7 +372,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         "skus_sin_dato_apto": sin_apto if aptos is not None else None,
         "filas_con_aviso_revisar": int((df["DG EXHI = DG MIN"] == "REVISAR").sum()),
         "frec_efectiva_mayor_que_bi": int((df["FREC EFECTIVA"] > df["FREC ENTRE DESP"]).sum()),
-        "pronostico_insuficiente": int(df["DIAG PRONOSTICO"].isin(["Insuficiente (<1 u/día)", "Repetido e insuficiente"]).sum()),
+        "pronostico_insuficiente": int(df["DIAG PRONOSTICO"].isin([etq_insuf, "Repetido e insuficiente"]).sum()),
         "pronostico_valores_repetidos": int(df["DIAG PRONOSTICO"].isin(["Valores repetidos", "Repetido e insuficiente"]).sum()),
         "pronostico_ciclo_mayor_exhi": int((df["PRON CICLO"] > df["Exhi"]).sum()),
         "max_por_cobertura": int((df["_regla_max"] == "Cobertura (R x días objetivo)").sum()),
@@ -380,14 +387,14 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     orden_bi = [c for c in df_bi.columns if isinstance(c, str) and c.strip() in df.columns]
     orden_bi = [c.strip() for c in orden_bi]
     calc = ["CONSUMO DIA", "APTO", "DIF", "%", "DG MIN", "DGMAX", "CON>EXHI",
-            "DG EXHIBICION", "DG EXHI = DG MIN", "TOTAL PRONOSTICO", "UNICOS", "_regla_min", "_sin_pronostico"]
+            "DG EXHIBICION", "DG EXHI = DG MIN", "TOTAL PRONOSTICO", "UNICOS", "DIAS REPETIDOS SEM1", "_regla_min", "_sin_pronostico"]
     base = [c for c in orden_bi if c not in ("Min", "Max") and c not in calc]
     cols = []
     for c in base:
         cols.append(c)
         if c == "Físico":
             cols += ["CONSUMO DIA", "APTO", "Min", "Max", "DIF", "%", "DG MIN", "DGMAX",
-                     "FREC EFECTIVA", "PROMEDIO PRONOSTICO DIA", "TOTAL PRONOSTICO", "UNICOS", "% CONSUMO/EMPQ",
+                     "FREC EFECTIVA", "PROMEDIO PRONOSTICO DIA", "TOTAL PRONOSTICO", "UNICOS", "DIAS REPETIDOS SEM1", "% CONSUMO/EMPQ",
                      "PRON CICLO", "DIAG PRONOSTICO", "% PROM/EXHI", "COBERTURA TDF", "% COBERTURA/EMPQ", "MOTIVO MIN/MAX"]
         if c == "Exhi":
             cols += ["CON>EXHI", "DG EXHIBICION", "DG EXHI = DG MIN"]
@@ -436,8 +443,8 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
         ("Prioridad ALTA", "Inventario Físico Negativo", inv_neg),
         ("Prioridad ALTA", "Consumo diario triplica la Exhibición", incongruencia),
         ("Prioridad MEDIA", f"Sobre stock: Cobertura > {p.sobrestock_dias:g} días", sobrestock),
-        ("Prioridad BAJA", f"Sobrestock por cubrir exhibición (consumo <= {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_bajo),
-        ("Prioridad BAJA", f"Sobrestock por cubrir exhibición (consumo > {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_alto),
+        ("Informativo", f"Sobrestock por cubrir exhibición (consumo <= {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_bajo),
+        ("Informativo", f"Sobrestock por cubrir exhibición (consumo > {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_alto),
     ]
     motivos = pd.Series("", index=df.index, dtype=object)
     prio = pd.Series("", index=df.index, dtype=object)
@@ -452,11 +459,11 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     rev.insert(0, "MOTIVOS DE REVISIÓN", motivos[n > 0])
     rev.insert(0, "PRIORIDAD", prio[n > 0])
     rev.insert(2, "N° MOTIVOS", n[n > 0])
-    rev["_ord"] = rev["PRIORIDAD"].map({"Prioridad ALTA": 0, "Prioridad MEDIA": 1, "Prioridad BAJA": 2})
+    rev["_ord"] = rev["PRIORIDAD"].map({"Prioridad ALTA": 0, "Prioridad MEDIA": 1, "Informativo": 2})
     rev = rev.sort_values(["_ord", "UNIDADES SOBRE MAX", "FALTANTE VS CICLO"], ascending=[True, False, False]).drop(columns="_ord")
     rev["DIAS INVENTARIO"] = rev["DIAS INVENTARIO"].replace(np.inf, 9999)   # sin consumo en el mes
     rev = _sugerir_acciones(rev, p)
-    cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "ACCIÓN PRINCIPAL", "SUGERENCIA A REALIZAR", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
+    cols = ["PRIORIDAD", "MOTIVOS DE REVISIÓN", "ACCIÓN PRINCIPAL", "ALERTA PVP", "SUGERENCIA A REALIZAR", "N° MOTIVOS", "CD", "Local", "DESIGNACION",
             "ESTADISTICO", "DESCRIPCION", "FAMILIA", "APTO", "Empq_final", "SUBEMPAQUE", "FREC EFECTIVA",
             "CONSUMO DIA", "CONSUMO CICLO", "Exhi", "INV NETO", "DIAS INVENTARIO", "UNIDADES SOBRE MAX",
             "Min", "Max", "COBERTURA EXHI (DIAS)", "COBERTURA MAX (DIAS)", "FALTANTE VS CICLO", "PVP",
@@ -467,9 +474,9 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
 def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
     """Para cada caso de REVISAR: analiza si subempacar es viable y propone la acción a realizar.
     Prioridad de soluciones: 1) corregir el dato (inventario / consumo), 2) subempacar si es viable y reduce el Max,
-    3) otras soluciones (reducir exhibición, transferir excedente, retirar del surtido), 4) informativo."""
+    3) si no hay solución operativa, queda mapeado; el sobre stock por cubrir la exhibición es solo informativo (la exhibición la define el área comercial)."""
     if rev.empty:
-        for c in ("ACCIÓN PRINCIPAL", "SUGERENCIA A REALIZAR", "VIABILIDAD SUBEMPAQUE", "SUB SUGERIDO", "MAX CON SUB", "REDUCCION MAX"):
+        for c in ("ACCIÓN PRINCIPAL", "ALERTA PVP", "SUGERENCIA A REALIZAR", "VIABILIDAD SUBEMPAQUE", "SUB SUGERIDO", "MAX CON SUB", "REDUCCION MAX"):
             rev[c] = pd.Series(dtype=object)
         return rev
     rev = rev.copy()
@@ -519,10 +526,15 @@ def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
     inv = pd.to_numeric(rev["INV NETO"], errors="coerce")
     cexhi = rev["COBERTURA EXHI (DIAS)"]
     cmax = rev["COBERTURA MAX (DIAS)"]
-    acciones, textos = [], []
+    pvp = _num(rev["PVP"]) if "PVP" in rev else pd.Series(np.nan, index=rev.index)
+    # Nota operativa: la exhibición la define el área comercial y el retiro de productos del surtido tampoco es decisión
+    # de abastecimiento. Por eso el sobre stock por cubrir la exhibición es solo informativo, y las únicas acciones
+    # propias son corregir el dato, notificar y subempacar (si es viable).
+    acciones, textos, alertas = [], [], []
     for k, i in enumerate(rev.index):
         motivos = str(rev.at[i, "MOTIVOS DE REVISIÓN"]).split(" | ")
         partes, principal = [], None
+        alerta = ""
 
         def add(cat, txt):
             nonlocal principal
@@ -537,47 +549,48 @@ def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
                     "con inventario negativo el abastecimiento queda distorsionado.")
             elif mo.startswith("Consumo diario"):
                 rel = f"{R[i] / exhi[i]:.1f} veces" if exhi[i] > 0 else "con Exhi = 0, muy por encima de"
-                add("Revisar exhibición / consumo",
-                    f"Revisar exhibición y consumo: el consumo diario ({R[i]:.1f}) es {rel} la Exhi ({exhi[i]:g}). "
-                    f"Validar si el consumo es atípico (promoción, dato erróneo) o subir la Exhi; el Min ya está en {int(rev.at[i, 'Min'])}.")
+                add("Notificar al área comercial",
+                    f"Notificar al área comercial: el consumo diario ({R[i]:.1f}) es {rel} la Exhi ({exhi[i]:g}); posible exhibición "
+                    f"insuficiente o consumo atípico (promoción, dato erróneo). El Min ya está en {int(rev.at[i, 'Min'])} (regla A).")
             elif mo.startswith("Sobre stock"):
                 e = estado[k]
-                if e == "si":
-                    add("Subempacar",
-                        f"SUBEMPACAR a {int(rev.at[i, 'SUB SUGERIDO'])}: {viab[k][8:]}. El Max baja de {int(rev.at[i, 'Max'])} a "
-                        f"{int(rev.at[i, 'MAX CON SUB'])} (−{int(rev.at[i, 'REDUCCION MAX'])} u; cobertura de {cmax[i]:.0f} a "
-                        f"{(rev.at[i, 'MAX CON SUB'] / R[i]):.0f} días).")
-                elif e == "posible":
-                    add("Evaluar subempaque",
-                        f"Evaluar SUBEMPACAR a {int(rev.at[i, 'SUB SUGERIDO'])} (solo en {int(n_sub[i])} local(es); validar con el maestro): "
-                        f"el Max bajaría de {int(rev.at[i, 'Max'])} a {int(rev.at[i, 'MAX CON SUB'])}. Si no se aprueba: reducir la Exhi "
-                        f"(hoy cubre {cexhi[i]:.0f} días) o transferir el excedente a otro local.")
+                if e in ("si", "posible"):
+                    if p.exigir_pvp_alto and pd.notna(pvp[i]) and pvp[i] < p.pvp_alto:
+                        alerta = f"PVP bajo ({pvp[i]:.2f} < {p.pvp_alto:g})"
+                    aviso = (f" ⚠ ALERTA: el PVP ({pvp[i]:.2f}) es menor al PVP mínimo ({p.pvp_alto:g}); por eso no aparece en la hoja "
+                             "SUGERIR SUBEMPAQUE. Validar si conviene igual." if alerta else "")
+                    if e == "si":
+                        add("Subempacar",
+                            f"SUBEMPACAR a {int(rev.at[i, 'SUB SUGERIDO'])}: {viab[k][8:]}. El Max baja de {int(rev.at[i, 'Max'])} a "
+                            f"{int(rev.at[i, 'MAX CON SUB'])} (−{int(rev.at[i, 'REDUCCION MAX'])} u; cobertura de {cmax[i]:.0f} a "
+                            f"{(rev.at[i, 'MAX CON SUB'] / R[i]):.0f} días).{aviso}")
+                    else:
+                        add("Evaluar subempaque",
+                            f"Evaluar SUBEMPACAR a {int(rev.at[i, 'SUB SUGERIDO'])} (solo en {int(n_sub[i])} local(es); validar con el maestro): "
+                            f"el Max bajaría de {int(rev.at[i, 'Max'])} a {int(rev.at[i, 'MAX CON SUB'])}. Si no se aprueba, "
+                            f"queda mapeado como sobre stock.{aviso}")
                 elif e == "ya":
-                    add("Reducir exhibición / retirar del surtido",
-                        f"Ya está subempacado ({sub_act[i]:g}). El sobre stock sale de Exhi + Min: reducir la Exhi (hoy cubre {cexhi[i]:.0f} días) "
-                        f"o retirar el producto del surtido del local (consumo {R[i]:.2f} u/día).")
+                    add("Sin solución operativa (mapeado)",
+                        f"Ya está subempacado ({sub_act[i]:g}). El sobre stock queda mapeado (el Max cubre {cmax[i]:.0f} días).")
                 else:
-                    add("Reducir exhibición / retirar del surtido",
-                        f"Subempacar no es posible ({viab[k]}). Otras opciones: reducir la Exhi (hoy cubre {cexhi[i]:.0f} días), "
-                        f"transferir el excedente a otro local, o retirar el producto del surtido si la rotación es muy baja ({R[i]:.2f} u/día).")
+                    add("Sin solución operativa (mapeado)",
+                        f"Subempacar no es posible ({viab[k]}). El sobre stock queda mapeado (el Max cubre {cmax[i]:.0f} días).")
             elif mo.startswith("Sobrestock por cubrir exhibición"):
-                if "<=" in mo:
-                    add("Reducir exhibición / retirar del surtido",
-                        f"Sobre stock por la exhibición (la Exhi cubre {cexhi[i]:.0f} días; consumo {R[i]:.2f} u/día, muy bajo). "
-                        "Evaluar reducir la Exhi o retirar el producto del surtido del local; subempacar no lo resuelve.")
-                else:
-                    add("Informativo",
-                        f"Informativo: la exhibición explica el sobre stock (Exhi cubre {cexhi[i]:.0f} días, consumo {R[i]:.2f} u/día). "
-                        "Mantener salvo que el espacio permita reducir la Exhi.")
+                add("Informativo",
+                    f"Informativo: sobre stock por cubrir la exhibición definida por el área comercial (la Exhi cubre {cexhi[i]:.0f} días; "
+                    f"consumo {R[i]:.2f} u/día). Se abastece igual; queda mapeado.")
         acciones.append(principal or "Informativo")
         textos.append(" | ".join(partes))
+        alertas.append(alerta)
     rev["ACCIÓN PRINCIPAL"] = acciones
+    rev["ALERTA PVP"] = alertas
     rev["SUGERENCIA A REALIZAR"] = textos
     return rev
 
 
 def marcar_en_revision(df: pd.DataFrame, rev: pd.DataFrame) -> pd.DataFrame:
-    """Agrega a la hoja principal la columna EN REVISAR (Sí/No) para poder filtrar los casos de la hoja REVISAR.
+    """Agrega a la hoja principal la columna EN REVISAR para filtrar los casos de la hoja REVISAR:
+    'Sí' = prioridad ALTA/MEDIA (hay algo que gestionar), 'Informativo' = solo mapeado, 'No' = no está en REVISAR.
     La prioridad queda en una columna privada (_PRIORIDAD_REVISAR) solo para colorear la fila al exportar."""
     df = df.drop(columns=[c for c in ("EN REVISAR", "PRIORIDAD REVISAR", "ACCIÓN REVISAR", "_PRIORIDAD_REVISAR")
                           if c in df.columns]).copy()
@@ -588,7 +601,8 @@ def marcar_en_revision(df: pd.DataFrame, rev: pd.DataFrame) -> pd.DataFrame:
         return df
     mapa = rev[llaves + ["PRIORIDAD"]].drop_duplicates(llaves)
     unido = df[llaves].merge(mapa, on=llaves, how="left")
-    df["EN REVISAR"] = np.where(unido["PRIORIDAD"].notna().values, "Sí", "No")
+    pr = unido["PRIORIDAD"]
+    df["EN REVISAR"] = np.where(pr.isna().values, "No", np.where(pr.eq("Informativo").values, "Informativo", "Sí"))
     df["_PRIORIDAD_REVISAR"] = unido["PRIORIDAD"].fillna("").values
     return df
 
@@ -702,7 +716,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
     return [
         ("Contexto", "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de la hoja 'Pronóstico cero' son las que conviene "
                      "pasar a método Min/Max, donde se usan los Min y Max configurados por local y estadístico en lugar del forecast."),
-        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (UNICOS <= {p.umbral_unicos}); o (3 y 4 juntas) el promedio diario del "
+        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (en la primera semana, {p.dias_repetidos_lineal} o más de los 7 días repiten valor; que desde el día 8 el modelo copie la semana no cuenta); o (3 y 4 juntas) el promedio diario del "
                                f"pronóstico es menor al {p.factor_prom_exhi:.0%} de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el {p.pct_empaque_cobertura:.0%} del "
                                "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero y lineal pasan siempre."),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
@@ -714,8 +728,8 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
                 f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
         ("Hoja REVISAR", f"Solo casos extremos: inventario físico negativo (ALTA); consumo diario >= {p.factor_consumo_exhi:g} veces la Exhibición (ALTA); "
-                         f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); y sobre stock por cubrir la exhibición (BAJA, informativo). "
-                         "Cada caso trae ACCIÓN PRINCIPAL y SUGERENCIA A REALIZAR: corregir el dato, subempacar si es viable y reduce el Max, o reducir exhibición / transferir / retirar del surtido. "
+                         f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); y sobre stock por cubrir la exhibición (solo informativo: la exhibición la define el área comercial y siempre se abastece). "
+                         "Cada caso trae ACCIÓN PRINCIPAL y SUGERENCIA A REALIZAR: corregir el dato, notificar al área comercial, subempacar si es viable y reduce el Max (con ALERTA PVP si el PVP es menor al mínimo), o dejarlo mapeado. "
                          "En 'Pronóstico cero' esas filas se marcan (EN REVISAR) para filtrarlas."),
         ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
                                     f"venderlo o no tuvo consumo) o de PVP alto; {'solo con PVP >= ' + format(p.pvp_alto, 'g') + ' (filtro obligatorio); ' if p.exigir_pvp_alto else 'PVP >= ' + format(p.pvp_alto, 'g') + ' = alto; '}aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
@@ -770,7 +784,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                 ([("SUGERIR SUBEMPAQUE", sug, "2F75B5")] if len(sug) else [])
         destacar_min = {"Min"}
         destacar_max = {"Max", "MAX ACTUAL", "MAX CON SUB"}
-        ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "FREC EFECTIVA",
+        ent = {"Min", "Max", "DIF", "Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "UNICOS", "DIAS REPETIDOS SEM1", "FREC EFECTIVA",
                "FREC ENTRE DESP", "Físico", "SUB ACTUAL", "SUB SUGERIDO", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"}
         pct = {"% CONSUMO/EMPQ", "% EXHI/EMPAQUE", "% PROM/EXHI", "% COBERTURA/EMPQ"}
         dec = {"COBERTURA TDF", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "DG MIN", "DGMAX", "DG EXHIBICION",
@@ -815,6 +829,14 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                         ws.cell(row=r, column=i).alignment = Alignment(wrap_text=True, vertical="top")
                 if col == "SUGERENCIA A REALIZAR":
                     ws.column_dimensions[get_column_letter(i)].width = 95
+                if col == "ALERTA PVP":
+                    ws.column_dimensions[get_column_letter(i)].width = 22
+                    for r in range(2, n + 2):
+                        cel = ws.cell(row=r, column=i)
+                        cel.alignment = Alignment(wrap_text=True, vertical="top")
+                        if cel.value:
+                            cel.font = Font(bold=True, color="9C0006", name="Arial")
+                            cel.fill = PatternFill("solid", fgColor="FFC7CE")
                 if col in ("ACCIÓN PRINCIPAL", "PRIORIDAD") and nombre == "REVISAR":
                     ws.column_dimensions[get_column_letter(i)].width = 40 if col == "ACCIÓN PRINCIPAL" else 17
                     for r in range(2, n + 2):
@@ -835,11 +857,11 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         col_idx = {c: i for i, c in enumerate(res.columns, 1)}
         pf = {"Prioridad ALTA": PatternFill("solid", fgColor="F8CBAD"),
               "Prioridad MEDIA": PatternFill("solid", fgColor="FFE699"),
-              "Prioridad BAJA": PatternFill("solid", fgColor="DDEBF7")}
+              "Informativo": PatternFill("solid", fgColor="DDEBF7")}
         if "EN REVISAR" in col_idx:
             ie = col_idx["EN REVISAR"]
             for r, (en, pr) in enumerate(zip(res["EN REVISAR"], prio_rev), 2):
-                if en == "Sí":
+                if en in ("Sí", "Informativo"):
                     c = wp.cell(row=r, column=ie)
                     c.fill = pf.get(pr, PatternFill("solid", fgColor="FFE699"))
                     c.font = Font(bold=True, name="Arial")
@@ -853,7 +875,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         baja = PatternFill("solid", fgColor="DDEBF7")
         for r in range(2, len(rev) + 2):
             v = str(ws.cell(row=r, column=1).value)
-            ws.cell(row=r, column=1).fill = alta if "ALTA" in v else baja if "BAJA" in v else media
+            ws.cell(row=r, column=1).fill = alta if "ALTA" in v else baja if "Informativo" in v else media
             ws.cell(row=r, column=1).font = Font(bold=True, name="Arial")
 
         # ---------------- Hoja Resumen ----------------
@@ -979,7 +1001,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         titulo("1. Cambio de método: de dónde partimos y a dónde llegamos")
         seg = [
             ("Pronóstico cero o sin pronóstico", resumen["segmento_1_pasa_pronostico_cero"], "Min/Max"),
-            (f"Pronóstico lineal (UNICOS <= {p.umbral_unicos})", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
+            (f"Pronóstico lineal ({p.dias_repetidos_lineal} o más días repetidos en la 1ª semana)", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
             (f"Promedio < {p.factor_prom_exhi:.0%} de la Exhi y cobertura < {p.pct_empaque_cobertura:.0%} del empaque (reglas 3 y 4)",
              resumen["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], "Min/Max"),
             (f"Promedio bajo, pero el forecast cubre {p.pct_empaque_cobertura:.0%} del empaque", resumen["segmento_4_tdf_rescatado_por_cobertura_empaque"], "TDF"),
@@ -1032,7 +1054,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         # 6) REVISAR
         titulo("6. Casos para revisar (hoja REVISAR)")
         if len(rev):
-            orden = ["Prioridad ALTA", "Prioridad MEDIA", "Prioridad BAJA"]
+            orden = ["Prioridad ALTA", "Prioridad MEDIA", "Informativo"]
             tot_r = len(rev)
             filas = []
             for k in orden:
@@ -1046,13 +1068,17 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
 
         if len(rev) and "ACCIÓN PRINCIPAL" in rev:
             titulo("6b. Acción sugerida para los casos de REVISAR")
-            orden_a = ["Corregir inventario", "Revisar exhibición / consumo", "Subempacar", "Evaluar subempaque",
-                       "Reducir exhibición / retirar del surtido", "Informativo"]
+            orden_a = ["Corregir inventario", "Notificar al área comercial", "Subempacar", "Evaluar subempaque",
+                       "Sin solución operativa (mapeado)", "Informativo"]
             filas = []
             for k in orden_a:
                 s = rev[rev["ACCIÓN PRINCIPAL"] == k]
                 if len(s):
                     filas.append((k, len(s), int(s["ESTADISTICO"].nunique()), len(s) / len(rev)))
+            n_alerta = int((rev["ALERTA PVP"].astype(str) != "").sum()) if "ALERTA PVP" in rev else 0
+            if n_alerta:
+                filas.append(("⚠ Con alerta de PVP bajo (subempaque recomendado con PVP < mínimo)", n_alerta,
+                              int(rev.loc[rev["ALERTA PVP"].astype(str) != "", "ESTADISTICO"].nunique()), n_alerta / len(rev)))
             tabla(["Acción principal", "Filas", "Estadísticos distintos", "% del total"], filas)
 
         # 7) Subempaque
@@ -1116,7 +1142,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Días de consumo transcurridos", p.dias_transcurridos),
             ("Regla 3 · promedio < % de la Exhibición", f"{p.factor_prom_exhi:.0%}"),
             ("Regla 4 · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
-            ("Pronóstico lineal: UNICOS <=", p.umbral_unicos),
+            ("Pronóstico lineal: días repetidos en la 1ª semana >=", p.dias_repetidos_lineal),
             ("Exhibición cubre menos de (días)", p.umbral_dg_exhi),
             ("Usar el mayor intervalo real entre despachos", "Sí" if p.usar_frec_efectiva else "No"),
             ("Cobertura adicional del Max (días)", p.dias_cobertura_max),

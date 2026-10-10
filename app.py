@@ -132,12 +132,13 @@ with st.sidebar:
              "de seguridad). Si ese forecast NO cubre ni este porcentaje del empaque final (0.50 = la mitad), y además se cumple la regla 3, "
              "el producto pasa a Min/Max. Si SÍ lo cubre, se queda en TDF. Los Dias SS se usan solo para esta decisión (en TDF), no para "
              "calcular el Min ni el Max.")
-    p.umbral_unicos = st.number_input(
-        "Pronóstico lineal: UNICOS menor o igual a", 0, 12, 5,
-        help="También pasa a Min/Max el producto con pronóstico LINEAL (repetido o plano). UNICOS = cuántos de los valores "
-             "diarios del pronóstico aparecen una sola vez. Un número bajo significa que el forecast repite los mismos valores "
-             "(por ejemplo, la semana 2 copia a la semana 1), por lo que no es confiable para abastecer por TDF. "
-             "Con 5, pasan los productos que tienen 5 o menos valores únicos. Un pronóstico normal tiene casi todos los valores distintos (UNICOS alto).")
+    p.dias_repetidos_lineal = st.number_input(
+        "Pronóstico lineal: días repetidos en la primera semana ≥", 2, 7, 7,
+        help="También pasa a Min/Max el producto con pronóstico LINEAL: el modelo todavía no aprendió y repite valores. "
+             "Como vendemos todos los días, un pronóstico normal varía día a día. Se mira SOLO la primera semana (días 1 a 7): "
+             "se cuenta cuántos de esos 7 días comparten el mismo valor con otro día. Con 7, toda la semana es lineal (por ejemplo, 7 días iguales). "
+             "Que desde el día 8 el pronóstico vuelva a copiar la semana NO se considera lineal, porque es solo el patrón semanal. "
+             "Bajar el número vuelve la regla más estricta con el pronóstico (pasan más productos).")
 
     st.subheader("3. Cálculo del Min")
     p.umbral_dg_exhi = st.number_input(
@@ -172,7 +173,7 @@ with st.sidebar:
              "Si el producto no tiene consumo en el mes, no se marca.")
     p.consumo_bajo_exhi = st.number_input(
         "Sobrestock por cubrir exhibición: corte de consumo (u/día)", 0.05, 5.0, 0.5, step=0.05, format="%.2f",
-        help="Los casos de sobre stock causados por cubrir la exhibición se muestran en REVISAR (prioridad BAJA, informativo) en dos categorías: "
+        help="Los casos de sobre stock causados por cubrir la exhibición se muestran en REVISAR (informativo) en dos categorías: "
              "consumo diario menor o igual a este valor, y consumo diario mayor a este valor.")
     p.pct_exhi_en_cobertura = st.number_input(
         "Sobre stock explicado por la Exhibición: Exhi cubre ≥ (% de los días del Max)", 0.1, 1.0, 0.8, step=0.05, format="%.2f",
@@ -307,7 +308,7 @@ if f_bi:
     seg["% del BI"] = (seg["Filas"] / r["segmento_total_BI"]).map("{:.1%}".format)
     seg["_pct"] = seg["Filas"] / r["segmento_total_BI"]
     st.dataframe(
-        seg.rename(columns={"_pct": "Proporción"}), hide_index=True, use_container_width=True,
+        seg.rename(columns={"_pct": "Proporción"}), hide_index=True, width="stretch",
         column_config={
             "Filas": st.column_config.NumberColumn(format="%d"),
             "Proporción": st.column_config.ProgressColumn(format=" ", min_value=0.0, max_value=1.0),
@@ -322,12 +323,12 @@ if f_bi:
 
     seccion("Detalle", "Revisa el resultado antes de descargar")
     t1, t2, t3 = st.tabs(["Resultado (pasan a Min/Max)", "Casos a revisar", "Sugerir subempaque"])
-    t1.dataframe(salida.head(500), use_container_width=True)
-    t2.dataframe(rev, use_container_width=True)
+    t1.dataframe(salida.head(500), width="stretch")
+    t2.dataframe(rev, width="stretch")
     t3.caption("Productos donde enviar el empaque completo genera sobrestock (o de PVP alto) y que son aptos para subempaque, "
                "con el mismo SKU ya subempacado en otros locales. Es una propuesta de cambio de maestro: "
                "el Max de la hoja principal usa el SUBEMPAQUE actual del BI.")
-    t3.dataframe(sug, use_container_width=True)
+    t3.dataframe(sug, width="stretch")
 
     buf = io.BytesIO()
     exportar_excel(salida, rev, r, buf, sug, p)
@@ -361,7 +362,7 @@ vías; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
 
 **Vía A · siempre pasa (el pronóstico está mal):**
 1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0.
-2. **Pronóstico lineal:** `UNICOS ≤ {p.umbral_unicos}`. UNICOS cuenta cuántos de los valores diarios del pronóstico aparecen una sola vez;
+2. **Pronóstico lineal:** en la **primera semana** (días 1 a 7) al menos **{p.dias_repetidos_lineal}** días repiten valor (`DIAS REPETIDOS SEM1 ≥ {p.dias_repetidos_lineal}`). Como se vende todos los días, un pronóstico normal varía día a día; si se repite, el modelo aún no aprendió.
    si el forecast repite los mismos valores o es plano (por ejemplo, la semana 2 copia a la semana 1), el pronóstico no es confiable.
 
 **Vía B · pasa solo si se cumplen las reglas 3 y 4 JUNTAS (el pronóstico es muy bajo):**
@@ -380,7 +381,7 @@ Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del em
 completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o es lineal el pronóstico
 está mal, y TDF trabajaría con un dato incorrecto; por eso pasa a Min/Max.
 
-Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ` y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
+Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `DIAS REPETIDOS SEM1`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ` y `MOTIVO MIN/MAX` del Excel muestran, fila por fila, por qué pasó a Min/Max.
 
 **Consumo diario.** El BI entrega el consumo acumulado del mes; se divide para los días transcurridos:
 
@@ -446,16 +447,16 @@ inmovilizar y muestra, para cada caso, los días que tardaría en venderse el em
 
 with st.expander("Hojas del Excel que se descarga"):
     st.markdown(f"""
-- **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Las filas que además están en REVISAR se marcan con la columna `EN REVISAR` (Sí/No, pintada según la prioridad) para poder filtrarlas; el detalle está en la hoja REVISAR. Incluye columnas de control
+- **Pronóstico cero:** los productos que pasan a Min/Max, con Min y Max listos para cargar. Las filas que además están en REVISAR se marcan con la columna `EN REVISAR` (`Sí` = prioridad ALTA/MEDIA, `Informativo`, `No`; pintada según la prioridad) para poder filtrarlas; el detalle está en la hoja REVISAR. Incluye columnas de control
   (`DIF`, `%`, `DG MIN`, `DGMAX`, `CON>EXHI`, `DG EXHI = DG MIN`, `% PROM/EXHI`, `COBERTURA TDF`, `% COBERTURA/EMPQ`, `% CONSUMO/EMPQ`).
 - **REVISAR:** **solo casos extremos**; el resto de avisos operativos no se lista.
   - *Prioridad ALTA:* **Inventario Físico Negativo** (`INV NETO < 0`) y **Consumo diario triplica la Exhibición** (`CONSUMO DIA ≥ {p.factor_consumo_exhi:g} × Exhi`).
-  - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), excepto lo que se explica por la exhibición (ver BAJA).
-  - *Prioridad BAJA (informativo):* **Sobrestock por cubrir exhibición**: el exceso de stock se debe a llenar la exhibición (la Exhi sola cubre más de {p.sobrestock_dias:g} días, o cubre al menos el {p.pct_exhi_en_cobertura:.0%} de los días del Max). Se separa en dos: **consumo ≤ {p.consumo_bajo_exhi:g} u/día** y **consumo > {p.consumo_bajo_exhi:g} u/día**.
+  - *Prioridad MEDIA:* **Sobre stock: Cobertura > {p.sobrestock_dias:g} días** (`Max ÷ CONSUMO DIA`), excepto lo que se explica por la exhibición (ver Informativo).
+  - *Informativo:* **Sobrestock por cubrir exhibición**. La exhibición la define el área comercial y siempre se abastece, así que solo se deja mapeado: el exceso de stock se debe a llenar la exhibición (la Exhi sola cubre más de {p.sobrestock_dias:g} días, o cubre al menos el {p.pct_exhi_en_cobertura:.0%} de los días del Max). Se separa en dos: **consumo ≤ {p.consumo_bajo_exhi:g} u/día** y **consumo > {p.consumo_bajo_exhi:g} u/día**.
   - Los productos sin consumo no se revisan: solo se mantiene la exhibición (Min = Exhi).
   - **Cada caso trae una ACCIÓN PRINCIPAL y una SUGERENCIA A REALIZAR.** Orden de soluciones: (1) corregir el dato (inventario negativo, consumo atípico); (2) **subempacar**, si es viable
     (apto, no es de una familia excluida, empaque ≥ {p.min_empaque_sugerir_sub} y el SKU ya está subempacado en ≥ {p.min_locales_con_sub} locales) y reduce el Max, mostrando el subempaque y el Max resultante;
-    (3) si no es viable, otras soluciones: reducir la exhibición, transferir el excedente o retirar el producto del surtido; (4) informativo. La columna *VIABILIDAD SUBEMPAQUE* explica por qué sí o no.
+    (3) si no hay solución operativa, el caso queda **mapeado** (no se propone mover exhibiciones ni retirar productos, porque no depende de abastecimiento); (4) informativo. La columna *VIABILIDAD SUBEMPAQUE* explica por qué sí o no, y *ALERTA PVP* avisa cuando el subempaque recomendado es de un producto con PVP menor al mínimo configurado (por eso no aparece en SUGERIR SUBEMPAQUE).
 - **SUGERIR SUBEMPAQUE:** propuestas de cambio de maestro para evitar sobrestock (ver reglas arriba).
 - **Resumen:** indicadores del proceso y esta misma leyenda de reglas.
 """)
