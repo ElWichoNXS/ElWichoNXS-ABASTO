@@ -26,7 +26,8 @@ class Params:
     dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
     # --- Qué filas pasan de TDF a Min/Max ---
     umbral_unicos: int = 5               # pronóstico "lineal": de los 12 días, 5 o menos valores únicos (menos de 6 que no se repiten)
-    pct_empaque_cobertura: float = 0.5   # regla 4: promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
+    pct_empaque_cobertura: float = 0.5   # sin subempaque: nivel TDF (Proyectado + Cubrimiento + Exhi + Destacado) < 50 % del EMPAQUE -> Min/Max
+    pct_subempaque_cobertura: float = 1.0  # con subempaque: ese mismo nivel < 100 % del SUBEMPAQUE -> Min/Max
     # --- Cálculo del Min ---
     dias_seguridad_min: float = 0.0      # días extra de consumo sobre la frecuencia de despacho para el Min (0 = solo cubrir hasta el próximo despacho)
     usar_consumo_anterior: bool = False  # True: la base del consumo diario es el consumo del mes anterior (archivo cargado), donde haya dato por local e ítem
@@ -352,10 +353,22 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     # Si no cumple ninguna, el pronóstico es normal y se queda en TDF.
     exhi_v = pd.to_numeric(df["Exhi"], errors="coerce").fillna(0).values
     prom_v = suma / n_dias
-    cob_v = prom_v * (df["FREC EFECTIVA"].values + df["Dias SS"].values)    # unidades que cubre el forecast hasta el próximo despacho + SS
+    # Nivel que TDF busca tener en el local = Proyectado + Cubrimiento + Exhibicion (+ Destacado)
+    #   Proyectado = pronostico del dia 0 (dia de despacho)
+    #   Cubrimiento = pronostico de los FREC dias siguientes + Dias SS (a promedio diario)
+    Vn = np.nan_to_num(V, nan=0.0)
+    cum = np.cumsum(Vn, axis=1)
+    fr = np.clip(np.round(df["FREC EFECTIVA"].values).astype(int), 0, n_dias - 1)
+    proyectado = Vn[:, 0]
+    cubrimiento = (cum[np.arange(len(df)), fr] - cum[:, 0]) + prom_v * df["Dias SS"].values
+    dest_v = pd.to_numeric(df["DESTACADOS"], errors="coerce").fillna(0).values if "DESTACADOS" in df.columns else np.zeros(len(df))
+    cob_v = proyectado + cubrimiento + exhi_v + dest_v
+    con_sub = df["SUBEMPAQUE"].values > 0
+    umbral_v = np.where(con_sub, p.pct_subempaque_cobertura * df["SUBEMPAQUE"].values,
+                        p.pct_empaque_cobertura * df["EMPAQUE"].values)
     cero = suma == 0
     lineal = lineal_flag
-    r4 = cob_v < p.pct_empaque_cobertura * df["Empq_final"].values
+    r4 = cob_v < umbral_v
     normal = ~cero & ~lineal                                # pronóstico normal (ni cero ni lineal)
     cond_mm = cero | lineal | r4
     seg = {                                   # segmentos mutuamente excluyentes (suman el total del BI)
@@ -367,10 +380,11 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     }
     motivo = np.where(cero, "Pronóstico cero",
               np.where(lineal, "Pronóstico lineal (repetido)",
-              np.where(r4, f"Cobertura (FREC+SS) < {p.pct_empaque_cobertura:.0%} del empaque", "")))
+              np.where(r4 & con_sub, f"Nivel TDF < {p.pct_subempaque_cobertura:.0%} del subempaque",
+              np.where(r4, f"Nivel TDF < {p.pct_empaque_cobertura:.0%} del empaque", ""))))
     df["MOTIVO MIN/MAX"] = motivo
     df["COBERTURA TDF"] = np.round(cob_v, 2)
-    df["% COBERTURA/EMPQ"] = cob_v / df["Empq_final"].replace(0, np.nan).values
+    df["% COBERTURA/EMPQ"] = cob_v / np.where(umbral_v > 0, umbral_v, np.nan)
     df["% PROM/EXHI"] = prom_v / np.where(exhi_v > 0, exhi_v, np.nan)
     df = df[cond_mm].copy().reset_index(drop=True)
     V = V[cond_mm]
@@ -808,8 +822,8 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
     return [
         ("Contexto", "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de la hoja 'Pronóstico cero' son las que conviene "
                      "pasar a método Min/Max, donde se usan los Min y Max configurados por local y estadístico en lugar del forecast."),
-        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (de los 12 días, menos de {p.umbral_unicos + 1} valores únicos; si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana: valores únicos <= valores repetidos); o (3) el forecast no cubre la mitad del empaque: "
-                               f"promedio diario x (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} del Empq_final. Si el forecast sí cubre esa parte del empaque, se queda en TDF. Cero y lineal pasan siempre."),
+        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (de los 12 días, menos de {p.umbral_unicos + 1} valores únicos; si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana: valores únicos <= valores repetidos); o (3) el nivel que TDF busca tener (Proyectado + Cubrimiento + Exhibición + Destacado) es menor a {p.pct_empaque_cobertura:.0%} del EMPAQUE (sin subempaque) o a {p.pct_subempaque_cobertura:.0%} del SUBEMPAQUE (con subempaque). "
+                               f"Si lo alcanza, se queda en TDF. Cero y lineal pasan siempre."),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
         ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos. "
                        + (f" Se usó el consumo del mes anterior / {p.dias_mes_anterior} días como base (donde hay dato por local e ítem)." if p.usar_consumo_anterior else "")),
@@ -826,7 +840,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
                                     f"venderlo o no tuvo consumo) o de PVP alto; {'solo con PVP >= ' + format(p.pvp_alto, 'g') + ' (filtro obligatorio); ' if p.exigir_pvp_alto else 'PVP >= ' + format(p.pvp_alto, 'g') + ' = alto; '}aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
                                     f"y el mismo SKU ya subempacado en al menos {p.min_locales_con_sub} locales. Nunca {', '.join(p.familias_no_subempacar) or '(ninguna familia)'}."),
-        ("Columnas de control", "% PROM/EXHI = promedio diario / Exhibición; COBERTURA TDF = promedio x (FREC + Dias SS); % COBERTURA/EMPQ = esa cobertura / Empq_final; "
+        ("Columnas de control", "% PROM/EXHI = promedio diario / Exhibición; COBERTURA TDF = nivel TDF (Proyectado + Cubrimiento + Exhi + Destacado); % COBERTURA/EMPQ = ese nivel / el umbral (50 % empaque o 100 % subempaque; menos de 100 % pasa a Min/Max); "
                                 "DG MIN / DGMAX = días de consumo que cubren el Min / el Max; CON>EXHI = REVISAR si el consumo diario supera el Min."),
     ]
 
@@ -1094,9 +1108,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         seg = [
             ("Pronóstico cero o sin pronóstico", resumen["segmento_1_pasa_pronostico_cero"], "Min/Max"),
             (f"Pronóstico lineal (menos de {p.umbral_unicos + 1} valores únicos en los 12 días)", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
-            (f"El forecast no cubre el {p.pct_empaque_cobertura:.0%} del empaque: promedio x (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} del Empq_final",
+            (f"Nivel TDF (Proyectado + Cubrimiento + Exhi + Destacado) < {p.pct_empaque_cobertura:.0%} del empaque / {p.pct_subempaque_cobertura:.0%} del subempaque",
              resumen["segmento_3_pasa_cobertura_empaque"], "Min/Max"),
-            ("Pronóstico normal (el forecast cubre el empaque)", resumen["segmento_5_tdf_pronostico_normal"], "TDF"),
+            ("Pronóstico normal (el nivel TDF alcanza el umbral)", resumen["segmento_5_tdf_pronostico_normal"], "TDF"),
         ]
         filas = [("Total BI · todo viene en TDF", n_in, 1.0, "TDF")]
         filas += [(a, b, b / n_in if n_in else 0, c) for a, b, c in seg]
@@ -1231,7 +1245,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         titulo("10. Parámetros usados en este cálculo")
         params = [
             ("Días de consumo transcurridos", p.dias_transcurridos),
-            ("Pronóstico bajo · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
+            ("Nivel TDF bajo · sin subempaque: < % del empaque", f"{p.pct_empaque_cobertura:.0%}"),
+            ("Nivel TDF bajo · con subempaque: < % del subempaque", f"{p.pct_subempaque_cobertura:.0%}"),
             ("Pronóstico lineal: valores únicos en 12 días <=", p.umbral_unicos),
             ("Días de seguridad sobre la frecuencia de despacho (Min)", p.dias_seguridad_min),
             ("Usar el consumo del mes anterior como base", "Sí" if p.usar_consumo_anterior else "No"),

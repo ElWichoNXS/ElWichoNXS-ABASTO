@@ -18,7 +18,7 @@ Cámbialo cada vez que descargues el BI: **Días de consumo transcurridos** (el 
 Pasa si cumple **una** de estas vías:
 - **Pronóstico cero** (suma de los días de pronóstico = 0).
 - **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico hay menos de 6 valores únicos (`UNICOS ≤ 5`; único = valor que aparece una sola vez). **Excepción:** si el modelo solo copió la semana (días 8 a 12 iguales a los días 1 a 5, columna `SEMANA COPIADA`), se juzga solo la primera semana: es lineal si tiene un valor repetido y los valores únicos no superan a los repetidos (con empate también es lineal). Ejemplos de primera semana: `5,5,5,5,5,5,5` y `3,3,4,4,5,5,6` → lineales; `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) y 7 valores distintos → no lineales.
-- **El forecast no cubre ni la mitad del empaque:** `promedio diario del pronóstico × (FREC + Dias SS) < 50 % × Empq_final`. Es la única vía para un pronóstico normal; si no se cumple, el producto se queda en TDF.
+- **Nivel TDF bajo:** TDF envía `Proyectado + Cubrimiento + Exhibición (+ Destacado)` (Proyectado = pronóstico del día 0; Cubrimiento = pronóstico de los FREC días siguientes + Dias SS × promedio). Si ese nivel es menor al **50 % del EMPAQUE** (sin subempaque) o al **100 % del SUBEMPAQUE** (con subempaque), el producto pasa a Min/Max; si lo alcanza, se queda en TDF. Es la única vía para un pronóstico normal.
 
 La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.
 
@@ -26,7 +26,7 @@ La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.
 - **Min:** `Cobertura = CONSUMO DIA × (FREC + días de seguridad) + Exhi` (días de seguridad = 0 por defecto). A) `CONSUMO DIA > Exhi` y B) con consumo → `Min = ROUND(Cobertura)`; C) sin consumo → `Min = Exhi`.
 - **Consumo del mes anterior (opcional):** tercer archivo con local, estadístico y consumo del mes anterior. Con la casilla «Usar el consumo del mes anterior» marcada, la base del consumo diario es ese consumo ÷ 30 días (donde haya dato); desmarcada, se usa el consumo del BI; `FUENTE CONSUMO` indica cuál se usó.
 - **Max:** con SUBEMPAQUE > 0 → `Min + SUBEMPAQUE`; sin subempaque → `Min + ROUND(EMPAQUE ÷ 2)`. Opcionalmente, cobertura de N días. Siempre se respeta el SUBEMPAQUE real del BI.
-- Los Dias SS solo se usan para decidir el cambio de método; el Min usa sus propios días de seguridad.
+- Los Dias SS del BI solo se usan para decidir el cambio de método; el Min usa sus propios días de seguridad.
 
 ## Excel que se descarga
 - **Pronóstico cero:** los productos que pasan a Min/Max, con las columnas Min y Max resaltadas. La columna `EN REVISAR` (`Sí` = prioridad ALTA/MEDIA, `Informativo`, `No`) permite filtrar los casos de la hoja REVISAR; `Exhi` queda junto a `DIF`.

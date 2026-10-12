@@ -137,7 +137,7 @@ ESC_REV = alt.Scale(domain=["Sí", "Informativo", "No"], range=[C_MINMAX, C_AMBA
 # ----------------------------------------------------------------------
 _P0 = Params()
 DEFAULTS = {
-    "dias_transcurridos": 5, "pct_empaque_cobertura": 0.50, "umbral_unicos": 5,
+    "dias_transcurridos": 5, "pct_empaque_cobertura": 0.50, "pct_subempaque_cobertura": 1.0, "umbral_unicos": 5,
     "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
     "dias_seguridad_min": 0.0, "usar_consumo_anterior": False, "dias_mes_anterior": 30, "usar_frec_efectiva": False, "dias_cobertura_max": 0.0,
     "umbral_venta_prom_dia": 1.0, "sobrestock_dias": 20.0, "consumo_bajo_exhi": 0.5,
@@ -190,11 +190,12 @@ with st.sidebar:
 
     with st.expander("2 · Qué pasa de TDF a Min/Max"):
         p.pct_empaque_cobertura = num(
-            "Pronóstico bajo: promedio × (FREC + Dias SS) menor a (% del empaque final)", "pct_empaque_cobertura", 0.05, 3.0,
-            "Un producto con pronóstico normal pasa a Min/Max si su forecast no cubre ni este porcentaje del empaque final (0.50 = la mitad): "
-            "promedio diario del pronóstico × (días de frecuencia de despacho + días de stock de seguridad). El sistema no envía nada si la necesidad es "
-            "menor a la mitad del empaque, así que ese producto casi nunca se repone con TDF. Si el forecast SÍ lo cubre, se queda en TDF. "
-            "Los Dias SS se usan solo para esta decisión (en TDF), no para calcular el Min ni el Max.", step=0.05, fmt="%.2f")
+            "Sin subempaque: nivel TDF menor a (% del empaque)", "pct_empaque_cobertura", 0.05, 3.0,
+            "Nivel TDF = Proyectado (pronóstico del día de despacho) + Cubrimiento (pronóstico de los días hasta la siguiente frecuencia + Dias SS) + Exhibición + Destacado. "
+            "Un producto con pronóstico normal SIN subempaque pasa a Min/Max si ese nivel no llega a este porcentaje del empaque (0.50 = la mitad).", step=0.05, fmt="%.2f")
+        p.pct_subempaque_cobertura = num(
+            "Con subempaque: nivel TDF menor a (% del subempaque)", "pct_subempaque_cobertura", 0.05, 3.0,
+            "Igual que el anterior, pero para productos que TDF despacha por subempaque: pasa a Min/Max si el nivel TDF no llega a este porcentaje del subempaque (1.00 = un subempaque completo).", step=0.05, fmt="%.2f")
         p.umbral_unicos = num(
             "Pronóstico lineal: valores únicos en los 12 días menor o igual a", "umbral_unicos", 0, 12,
             "También pasa a Min/Max el producto con pronóstico LINEAL: el modelo todavía no aprendió y repite valores. "
@@ -554,11 +555,11 @@ with t_cla:
         if len(mu):
             mu = mu.assign(v=mu["% COBERTURA/EMPQ"].clip(upper=1.5))
             hist = alt.Chart(mu).mark_bar(color=C_MINMAX, cornerRadiusEnd=2).encode(
-                x=alt.X("v:Q", bin=alt.Bin(maxbins=24), title="Forecast hasta el próximo despacho ÷ empaque final (tope 150 %)", axis=alt.Axis(format="%")),
+                x=alt.X("v:Q", bin=alt.Bin(maxbins=24), title="Nivel TDF ÷ umbral (50 % empaque o 100 % subempaque) · tope 150 %", axis=alt.Axis(format="%")),
                 y=alt.Y("count():Q", title="Filas"),
                 tooltip=[alt.Tooltip("count():Q", title="Filas", format=",")]).properties(height=260)
-            regla = alt.Chart(pd.DataFrame({"x": [p.pct_empaque_cobertura]})).mark_rule(color=C_AMBAR, strokeDash=[6, 4], size=2).encode(x="x:Q")
-            grafico("Cobertura del forecast sobre el empaque", f"La línea marca el corte ({p.pct_empaque_cobertura:.0%} del empaque).", hist + regla)
+            regla = alt.Chart(pd.DataFrame({"x": [1.0]})).mark_rule(color=C_AMBAR, strokeDash=[6, 4], size=2).encode(x="x:Q")
+            grafico("Nivel TDF frente al umbral", "La línea marca el corte: a la izquierda el nivel TDF no alcanza el umbral y pasa a Min/Max.", hist + regla)
     with cB:
         cb = salida["CONSUMO DIA"].astype(float)
         cov = (salida["Max"] / cb.where(cb > 0)).dropna()

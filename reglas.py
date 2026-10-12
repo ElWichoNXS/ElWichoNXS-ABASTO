@@ -24,13 +24,14 @@ El cálculo es por cada combinación **Local × Estadístico**. El producto **pa
    Por eso se revisa con 12 días de venta pronosticada. **Excepción:** si el modelo solo **copió la semana** (los días 8 a 12 son iguales a los días 1 a 5; columna `SEMANA COPIADA = Sí`), se juzga únicamente la **primera semana**: es lineal si tiene
    al menos un valor repetido y los valores únicos **no superan** a los repetidos (`VALORES UNICOS SEM1 ≤ VALORES REPETIDOS SEM1`; con empate, por ejemplo 2 únicos y 2 repetidos, también es lineal). Ejemplos de primera semana: `5,5,5,5,5,5,5` (0 únicos, 1 repetido) → lineal; `3,3,4,4,5,5,6` (1 único, 3 repetidos) → lineal;
    `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) → no lineal; `4.1,3.2,3.4,1.9,4.5,4.4,3.6` (7 únicos) → no lineal.
-3. **El forecast no cubre ni la mitad del empaque final** (pronóstico normal pero muy bajo): `promedio diario × (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} × Empq_final`.
-   Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del empaque final o más, TDF puede despachar con ese forecast y **se queda en TDF**.
+3. **El nivel que TDF busca tener es menor al escalón de despacho** (pronóstico normal): TDF envía `Proyectado + Cubrimiento + Exhibición (+ Destacado)` y despacha por empaques (o subempaques) completos. Si ese nivel no llega al **{p.pct_empaque_cobertura:.0%} del EMPAQUE** (producto sin subempaque) o al **{p.pct_subempaque_cobertura:.0%} del SUBEMPAQUE** (producto con subempaque), cada despacho deja mucho más stock del necesario y **pasa a Min/Max**. Si lo alcanza, **se queda en TDF**.
 
+- **Proyectado** = pronóstico del día 0 (día de despacho).
+- **Cubrimiento** = pronóstico de los FREC días siguientes + Dias SS × promedio diario.
+- **Destacado** = columna DESTACADOS del BI (0 si no hay).
 - **Promedio diario** = suma del pronóstico de todos los días que trae el BI (**TOTAL PRONOSTICO**, normalmente 12 días) ÷ N° de días de pronóstico (**PROMEDIO PRONOSTICO DIA**; si el BI trae menos de 12 días, se divide para esos días).
 - **FREC** = días entre despachos del local (**FREC ENTRE DESP**{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
 - **Dias SS** = días de stock de seguridad de TDF. Se usan **solo para decidir el cambio de método**; no intervienen en el cálculo del Min ni del Max.
-- **Empq_final** = empaque con el que realmente se despacha (el SUBEMPAQUE si existe; si no, el EMPAQUE).
 
 **Importante:** las condiciones 1 y 2 aplican **aunque el producto tenga subempaque / Empq_final = 1** y sin importar la cobertura del empaque. Con empaque 1, TDF puede
 completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o es lineal el pronóstico
