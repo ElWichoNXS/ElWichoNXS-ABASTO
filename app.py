@@ -191,7 +191,7 @@ with st.sidebar:
     with st.expander("2 · Qué pasa de TDF a Min/Max"):
         p.pct_empaque_cobertura = num(
             "Sin subempaque: nivel TDF menor a (% del empaque)", "pct_empaque_cobertura", 0.05, 3.0,
-            "Nivel TDF = Proyectado (pronóstico del día de despacho) + Cubrimiento (pronóstico de los días hasta la siguiente frecuencia + Dias SS) + Exhibición + Destacado. "
+            "Nivel TDF = Proyectado (pronóstico del día de despacho) + Cubrimiento (suma del pronóstico de los FREC + Dias SS días siguientes) + Exhibición + Destacado. "
             "Un producto con pronóstico normal SIN subempaque pasa a Min/Max si ese nivel no llega a este porcentaje del empaque (0.50 = la mitad).", step=0.05, fmt="%.2f")
         p.pct_subempaque_cobertura = num(
             "Con subempaque: nivel TDF menor a (% del subempaque)", "pct_subempaque_cobertura", 0.05, 3.0,

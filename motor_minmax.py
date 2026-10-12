@@ -355,12 +355,15 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     prom_v = suma / n_dias
     # Nivel que TDF busca tener en el local = Proyectado + Cubrimiento + Exhibicion (+ Destacado)
     #   Proyectado = pronostico del dia 0 (dia de despacho)
-    #   Cubrimiento = pronostico de los FREC dias siguientes + Dias SS (a promedio diario)
+    #   Cubrimiento = suma del pronostico de los (FREC + Dias SS) dias siguientes al dia 0
     Vn = np.nan_to_num(V, nan=0.0)
-    cum = np.cumsum(Vn, axis=1)
-    fr = np.clip(np.round(df["FREC EFECTIVA"].values).astype(int), 0, n_dias - 1)
-    proyectado = Vn[:, 0]
-    cubrimiento = (cum[np.arange(len(df)), fr] - cum[:, 0]) + prom_v * df["Dias SS"].values
+    hor = np.clip(np.round(df["FREC EFECTIVA"].values + df["Dias SS"].values).astype(int), 0, 60)   # dias de cubrimiento = FREC + Dias SS
+    ext = np.tile(prom_v[:, None], (1, int(hor.max()) + 1))      # mas alla del pronostico del BI se usa el promedio diario
+    ext[:, :n_dias] = Vn
+    cum = np.cumsum(ext, axis=1)
+    idx = np.arange(len(df))
+    proyectado = ext[:, 0]
+    cubrimiento = cum[idx, hor] - cum[:, 0]                        # pronostico de los dias 1..(FREC + Dias SS)
     dest_v = pd.to_numeric(df["DESTACADOS"], errors="coerce").fillna(0).values if "DESTACADOS" in df.columns else np.zeros(len(df))
     cob_v = proyectado + cubrimiento + exhi_v + dest_v
     con_sub = df["SUBEMPAQUE"].values > 0

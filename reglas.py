@@ -27,7 +27,7 @@ El cálculo es por cada combinación **Local × Estadístico**. El producto **pa
 3. **El nivel que TDF busca tener es menor al escalón de despacho** (pronóstico normal): TDF envía `Proyectado + Cubrimiento + Exhibición (+ Destacado)` y despacha por empaques (o subempaques) completos. Si ese nivel no llega al **{p.pct_empaque_cobertura:.0%} del EMPAQUE** (producto sin subempaque) o al **{p.pct_subempaque_cobertura:.0%} del SUBEMPAQUE** (producto con subempaque), cada despacho deja mucho más stock del necesario y **pasa a Min/Max**. Si lo alcanza, **se queda en TDF**.
 
 - **Proyectado** = pronóstico del día 0 (día de despacho).
-- **Cubrimiento** = pronóstico de los FREC días siguientes + Dias SS × promedio diario.
+- **Cubrimiento** = suma del pronóstico de los (FREC + Dias SS) días siguientes al día 0 (si pasa de los 12 días del BI, se completa con el promedio diario).
 - **Destacado** = columna DESTACADOS del BI (0 si no hay).
 - **Promedio diario** = suma del pronóstico de todos los días que trae el BI (**TOTAL PRONOSTICO**, normalmente 12 días) ÷ N° de días de pronóstico (**PROMEDIO PRONOSTICO DIA**; si el BI trae menos de 12 días, se divide para esos días).
 - **FREC** = días entre despachos del local (**FREC ENTRE DESP**{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
