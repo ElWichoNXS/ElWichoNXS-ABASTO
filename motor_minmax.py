@@ -26,11 +26,7 @@ class Params:
     dias_transcurridos: int = 5          # días del mes transcurridos: CONSUMO DIA = CONSUMOS ACU (consumo acumulado del mes) / dias_transcurridos
     # --- Qué filas pasan de TDF a Min/Max ---
     umbral_unicos: int = 5               # pronóstico "lineal": de los 12 días, 5 o menos valores únicos (menos de 6 que no se repiten)
-    usar_total_menor_exhi: bool = True   # filtro 2: el pronóstico total de los días no cubre ni la exhibición -> pasa a Min/Max
-    factor_total_exhi: float = 1.0       # ... TOTAL PRONOSTICO < factor x Exhi (1.0 = no cubre ni una exhibición)
-    usar_retencion_inventario: bool = True  # pronóstico normal cuyo inventario cubre la exhibición + el consumo hasta la próxima entrega se queda en TDF
-    factor_prom_exhi: float = 0.55       # regla 3: promedio diario del pronóstico < 55 % de la Exhibición ...
-    pct_empaque_cobertura: float = 0.5   # regla 4: ... Y promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
+    pct_empaque_cobertura: float = 0.5   # regla 4: promedio x (FREC + Dias SS) < 50 % del Empq_final (si lo cubre, se queda en TDF)
     # --- Cálculo del Min ---
     dias_seguridad_min: float = 0.0      # días extra de consumo sobre la frecuencia de despacho para el Min (0 = solo cubrir hasta el próximo despacho)
     usar_consumo_anterior: bool = False  # True: la base del consumo diario es el consumo del mes anterior (archivo cargado), donde haya dato por local e ítem
@@ -359,35 +355,19 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     cob_v = prom_v * (df["FREC EFECTIVA"].values + df["Dias SS"].values)    # unidades que cubre el forecast hasta el próximo despacho + SS
     cero = suma == 0
     lineal = lineal_flag
-    r3 = prom_v < p.factor_prom_exhi * exhi_v
     r4 = cob_v < p.pct_empaque_cobertura * df["Empq_final"].values
-    r34 = r3 & r4
-    r_tot = (suma < p.factor_total_exhi * exhi_v) & (exhi_v > 0) if p.usar_total_menor_exhi else np.zeros(len(suma), dtype=bool)
-    cand = r_tot | r34                                      # candidatas por pronóstico bajo
     normal = ~cero & ~lineal                                # pronóstico normal (ni cero ni lineal)
-    if p.usar_retencion_inventario and "INV NETO" in df.columns:
-        # Retención por inventario: si INV NETO cubre la exhibición + el consumo hasta la próxima entrega (frecuencia entre despachos;
-        # las entregas llegan el mismo día programado), con la velocidad de consumo más alta entre el consumo real y el promedio pronosticado, TDF se queda.
-        inv_v = pd.to_numeric(df["INV NETO"], errors="coerce").fillna(0).values
-        vel = np.maximum(df["CONSUMO DIA"].values, prom_v)
-        retenido = cand & normal & (inv_v > 0) & (inv_v - vel * df["FREC EFECTIVA"].values >= exhi_v)
-    else:
-        retenido = np.zeros(len(df), dtype=bool)
-    cond_mm = cero | lineal | (cand & ~retenido)
+    cond_mm = cero | lineal | r4
     seg = {                                   # segmentos mutuamente excluyentes (suman el total del BI)
         "1_pasa_pronostico_cero": int(cero.sum()),
         "2_pasa_pronostico_lineal": int((lineal & ~cero).sum()),
-        "2b_pasa_total_menor_exhibicion": int((r_tot & ~retenido & ~lineal & ~cero).sum()),
-        "3_pasa_prom_exhi_y_cobertura_empaque": int((r34 & ~r_tot & ~retenido & ~lineal & ~cero).sum()),
-        "3b_tdf_retenido_por_inventario": int(retenido.sum()),
-        "4_tdf_rescatado_por_cobertura_empaque": int((r3 & ~r4 & ~cand & normal).sum()),
-        "5_tdf_pronostico_normal": int((normal & ~cand & ~(r3 & ~r4)).sum()),
+        "3_pasa_cobertura_empaque": int((r4 & normal).sum()),
+        "5_tdf_pronostico_normal": int((normal & ~r4).sum()),
         "total_BI": n_in,
     }
     motivo = np.where(cero, "Pronóstico cero",
               np.where(lineal, "Pronóstico lineal (repetido)",
-              np.where(r_tot & ~retenido, f"Pronóstico de {n_dias} días no cubre la exhibición",
-              np.where(r34 & ~retenido, f"Promedio < {p.factor_prom_exhi:.0%} de la Exhibición y cobertura (FREC+SS) < {p.pct_empaque_cobertura:.0%} del empaque", ""))))
+              np.where(r4, f"Cobertura (FREC+SS) < {p.pct_empaque_cobertura:.0%} del empaque", "")))
     df["MOTIVO MIN/MAX"] = motivo
     df["COBERTURA TDF"] = np.round(cob_v, 2)
     df["% COBERTURA/EMPQ"] = cob_v / df["Empq_final"].replace(0, np.nan).values
@@ -432,18 +412,18 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     # 5) MIN -------------------------------------------------------------------
     E = df["Exhi"].astype(float)
     F = df["FREC EFECTIVA"].astype(float)
-    cobertura = R * (F + p.dias_seguridad_min)                 # lo que se consume hasta el próximo despacho (+ días de seguridad)
+    # Cobertura = exhibición + consumo hasta la próxima entrega (frecuencia entre despachos + días de seguridad)
+    cobertura = R * (F + p.dias_seguridad_min) + E
 
     caso_a = R > E                                             # consumo diario > exhibición: se agota en menos de un día
-    caso_b = (~caso_a) & (cobertura > E)                        # la exhibición no alcanza hasta el próximo despacho
+    caso_b = (~caso_a) & (R > 0)                               # hay consumo: la exhibición debe llegar entera a la próxima entrega
 
-    min_ = np.where(caso_a, xround(cobertura, 0),
-            np.where(caso_b, xround(cobertura, 0), E))
+    min_ = np.where(R > 0, xround(cobertura, 0), E)
     df["Min"] = a_entero(min_).values
     seg_txt = f"+{p.dias_seguridad_min:g}" if p.dias_seguridad_min > 0 else ""
-    df["_regla_min"] = np.where(caso_a, f"A: consumo>exhi -> ROUND(R*(FREC{seg_txt}),0)",
-                         np.where(caso_b, f"B: exhi no cubre hasta el próximo despacho -> ROUND(R*(FREC{seg_txt}),0)",
-                                  "C: Min = Exhi"))
+    df["_regla_min"] = np.where(caso_a, f"A: consumo>exhi -> ROUND(Exhi+R*(FREC{seg_txt}),0)",
+                         np.where(caso_b, f"B: con consumo -> ROUND(Exhi+R*(FREC{seg_txt}),0)",
+                                  "C: sin consumo -> Min = Exhi"))
 
     # 6) MAX -------------------------------------------------------------------
     mx, regla = _calc_max(df["Min"], R, df["EMPAQUE"], df["SUBEMPAQUE"], p)
@@ -828,18 +808,15 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
     return [
         ("Contexto", "Todo el BI está en método TDF (abastecimiento por forecast). Las filas de la hoja 'Pronóstico cero' son las que conviene "
                      "pasar a método Min/Max, donde se usan los Min y Max configurados por local y estadístico en lugar del forecast."),
-        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (de los 12 días, menos de {p.umbral_unicos + 1} valores únicos; si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana: valores únicos <= valores repetidos); {'(2b) el pronóstico total de los días es menor a ' + format(p.factor_total_exhi, 'g') + ' x la Exhibición (no cubre ni la exhibición); ' if p.usar_total_menor_exhi else ''}o (3 y 4 juntas) el promedio diario del "
-                               f"pronóstico es menor al {p.factor_prom_exhi:.0%} de la Exhibición Y promedio x (FREC + Dias SS) no cubre ni el {p.pct_empaque_cobertura:.0%} del "
-                               "Empq_final. Si cumple la 3 pero el forecast cubre esa parte del empaque, se queda en TDF. Cero, lineal y 'no cubre la exhibición' pasan siempre. "
-                               + (f"Excepción: un producto con pronóstico normal se queda en TDF si su INV NETO cubre la Exhi más el consumo hasta la próxima entrega (frecuencia entre despachos), "
-                                  "con la velocidad de consumo mayor entre el consumo real y el promedio pronosticado." if p.usar_retencion_inventario else "")),
+        ("Qué pasa a Min/Max", f"(1) Pronóstico cero o sin pronóstico; (2) pronóstico lineal (de los 12 días, menos de {p.umbral_unicos + 1} valores únicos; si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana: valores únicos <= valores repetidos); o (3) el forecast no cubre la mitad del empaque: "
+                               f"promedio diario x (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} del Empq_final. Si el forecast sí cubre esa parte del empaque, se queda en TDF. Cero y lineal pasan siempre."),
         ("Promedio diario", "TOTAL PRONOSTICO (suma de los días de pronóstico del BI) / N° de días de pronóstico."),
         ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos. "
                        + (f" Se usó el consumo del mes anterior / {p.dias_mes_anterior} días como base (donde hay dato por local e ítem)." if p.usar_consumo_anterior else "")),
         ("FREC", f"Días entre despachos: {frec}."),
-        ("Min · regla A", "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)."),
-        ("Min · regla B", f"Si la Exhi no alcanza hasta el próximo despacho (CONSUMO DIA x FREC{' + ' + format(p.dias_seguridad_min, 'g') + ' días de seguridad' if p.dias_seguridad_min > 0 else ''} > Exhi): Min = ROUND(CONSUMO DIA x FREC; 0)."),
-        ("Min · regla C", "Cualquier otro caso (la mayoría): Min = Exhi."),
+        ("Min · regla A", f"Si CONSUMO DIA > Exhi: Min = ROUND(Exhi + CONSUMO DIA x FREC{' + días de seguridad' if p.dias_seguridad_min > 0 else ''}; 0)."),
+        ("Min · regla B", f"Si hay consumo (y no aplica A): Min = ROUND(Exhi + CONSUMO DIA x FREC{' + días de seguridad' if p.dias_seguridad_min > 0 else ''}; 0). La exhibición debe llegar entera hasta la próxima entrega."),
+        ("Min · regla C", "Sin consumo en el mes: Min = Exhi."),
         ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
                 f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
         ("Hoja REVISAR", f"Solo casos extremos: inventario físico negativo (ALTA); consumo diario >= {p.factor_consumo_exhi:g} veces la Exhibición (ALTA); "
@@ -1117,12 +1094,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         seg = [
             ("Pronóstico cero o sin pronóstico", resumen["segmento_1_pasa_pronostico_cero"], "Min/Max"),
             (f"Pronóstico lineal (menos de {p.umbral_unicos + 1} valores únicos en los 12 días)", resumen["segmento_2_pasa_pronostico_lineal"], "Min/Max"),
-            (f"Pronóstico total de los días < {p.factor_total_exhi:g} x la Exhibición (no cubre ni la exhibición)", resumen.get("segmento_2b_pasa_total_menor_exhibicion", 0), "Min/Max"),
-            (f"Promedio < {p.factor_prom_exhi:.0%} de la Exhi y cobertura < {p.pct_empaque_cobertura:.0%} del empaque (reglas 3 y 4)",
-             resumen["segmento_3_pasa_prom_exhi_y_cobertura_empaque"], "Min/Max"),
-            (f"Pronóstico normal bajo, pero el inventario sostiene la exhibición (se queda en TDF)", resumen.get("segmento_3b_tdf_retenido_por_inventario", 0), "TDF"),
-            (f"Promedio bajo, pero el forecast cubre {p.pct_empaque_cobertura:.0%} del empaque", resumen["segmento_4_tdf_rescatado_por_cobertura_empaque"], "TDF"),
-            ("Pronóstico normal", resumen["segmento_5_tdf_pronostico_normal"], "TDF"),
+            (f"El forecast no cubre el {p.pct_empaque_cobertura:.0%} del empaque: promedio x (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} del Empq_final",
+             resumen["segmento_3_pasa_cobertura_empaque"], "Min/Max"),
+            ("Pronóstico normal (el forecast cubre el empaque)", resumen["segmento_5_tdf_pronostico_normal"], "TDF"),
         ]
         filas = [("Total BI · todo viene en TDF", n_in, 1.0, "TDF")]
         filas += [(a, b, b / n_in if n_in else 0, c) for a, b, c in seg]
@@ -1139,9 +1113,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         # 3) Regla del Min
         titulo("3. Cómo quedó el Min (regla aplicada)")
         if "_regla_min" in df:
-            nombres_min = {"A": "A · consumo diario > Exhi → Min = ROUND(consumo x FREC)",
-                           "B": "B · Exhi cubre poco y consumo x FREC > Exhi → Min = ROUND(consumo x FREC)",
-                           "C": "C · Min = Exhi (la exhibición)"}
+            nombres_min = {"A": "A · consumo diario > Exhi → Min = ROUND(Exhi + consumo x FREC)",
+                           "B": "B · con consumo → Min = ROUND(Exhi + consumo x FREC)",
+                           "C": "C · sin consumo → Min = Exhi"}
             claves = {str(k)[:1]: k for k in df["_regla_min"].dropna().unique()}
             filas = por_grupo("_regla_min", df, orden=[claves[k] for k in "ABC" if k in claves],
                               nombres={claves[k]: nombres_min[k] for k in claves if k in nombres_min})
@@ -1257,12 +1231,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         titulo("10. Parámetros usados en este cálculo")
         params = [
             ("Días de consumo transcurridos", p.dias_transcurridos),
-            ("Regla 3 · promedio < % de la Exhibición", f"{p.factor_prom_exhi:.0%}"),
-            ("Regla 4 · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
+            ("Pronóstico bajo · promedio x (FREC + Dias SS) < % del empaque final", f"{p.pct_empaque_cobertura:.0%}"),
             ("Pronóstico lineal: valores únicos en 12 días <=", p.umbral_unicos),
-            ("Retener en TDF si el inventario sostiene la exhibición", "Sí" if p.usar_retencion_inventario else "No"),
-            ("Filtro 2 · activar 'pronóstico total < exhibición'", "Sí" if p.usar_total_menor_exhi else "No"),
-            ("Filtro 2 · pronóstico total < (veces la Exhibición)", p.factor_total_exhi),
             ("Días de seguridad sobre la frecuencia de despacho (Min)", p.dias_seguridad_min),
             ("Usar el consumo del mes anterior como base", "Sí" if p.usar_consumo_anterior else "No"),
             ("Días del mes anterior", p.dias_mes_anterior),

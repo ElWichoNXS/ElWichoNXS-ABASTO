@@ -17,33 +17,22 @@ Como la data viene en TDF, los Min/Max que traiga el BI no se usan (no aplican e
 
     with st.expander("Paso 1 · Qué productos pasan de TDF a Min/Max", expanded=True):
         st.markdown(f"""
-El cálculo es por cada combinación **Local × Estadístico**. El producto **pasa de TDF a Min/Max** si cumple **una** de estas dos
-vías; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
+El cálculo es por cada combinación **Local × Estadístico**. El producto **pasa de TDF a Min/Max** si cumple **una** de estas tres condiciones; si no cumple ninguna, **se queda en TDF** y no aparece en el archivo:
 
-**Vía A · siempre pasa (el pronóstico está mal o no sostiene la exhibición):**
-1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0.
-2. **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico, hay **{p.umbral_unicos} o menos valores únicos** (`UNICOS ≤ {p.umbral_unicos}`, es decir, menos de {p.umbral_unicos + 1}); un valor único es el que aparece una sola vez.
+1. **Pronóstico cero o sin pronóstico:** la suma de los días de pronóstico es 0. Siempre pasa.
+2. **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico, hay **{p.umbral_unicos} o menos valores únicos** (`UNICOS ≤ {p.umbral_unicos}`, es decir, menos de {p.umbral_unicos + 1}); un valor único es el que aparece una sola vez. Siempre pasa.
    Por eso se revisa con 12 días de venta pronosticada. **Excepción:** si el modelo solo **copió la semana** (los días 8 a 12 son iguales a los días 1 a 5; columna `SEMANA COPIADA = Sí`), se juzga únicamente la **primera semana**: es lineal si tiene
    al menos un valor repetido y los valores únicos **no superan** a los repetidos (`VALORES UNICOS SEM1 ≤ VALORES REPETIDOS SEM1`; con empate, por ejemplo 2 únicos y 2 repetidos, también es lineal). Ejemplos de primera semana: `5,5,5,5,5,5,5` (0 únicos, 1 repetido) → lineal; `3,3,4,4,5,5,6` (1 único, 3 repetidos) → lineal;
    `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) → no lineal; `4.1,3.2,3.4,1.9,4.5,4.4,3.6` (7 únicos) → no lineal.
-2b. **El pronóstico total no cubre la exhibición** (activable en los parámetros): `TOTAL PRONOSTICO < {p.factor_total_exhi:g} × Exhi`{"" if p.usar_total_menor_exhi else " **(desactivado ahora)**"}. Si en todos los días de pronóstico no se vende ni lo que cabe en la exhibición, TDF no puede sostener la góndola; con Min/Max, el Min = Exhibición la mantiene llena. No es un pronóstico «lineal»: el pronóstico puede ser correcto pero muy bajo.
-
-**Vía B · pasa solo si se cumplen las reglas 3 y 4 JUNTAS (el pronóstico es muy bajo):**
-
-3. **Promedio del pronóstico < {p.factor_prom_exhi:.0%} de la exhibición:** `promedio diario del pronóstico < {p.factor_prom_exhi:.0%} × Exhi`.
-4. **El forecast no cubre ni la mitad del empaque final:** `promedio diario × (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} × Empq_final`.
-
-**Excepción por inventario (solo pronóstico normal):** si el producto cumple el filtro 2b o las reglas 3 y 4 pero su **INV NETO cubre la exhibición más el consumo hasta la próxima entrega**, **se queda en TDF**{"" if p.usar_retencion_inventario else " **(desactivado ahora)**"}: todavía no hace falta Min/Max, y se vuelve a evaluar en la próxima corrida. Fórmula: `INV NETO ≥ Exhi + max(consumo real, promedio pronosticado) × FREC` (FREC = días entre despachos; las entregas llegan el mismo día programado). Con INV NETO ≤ 0 nunca se retiene. Pronóstico cero y lineal no se retienen: pasan siempre.
-
-Si cumple la regla 3 pero el forecast **sí** cubre la mitad del empaque final (regla 4 no se cumple), **se queda en TDF**.
-Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del empaque final o más, TDF puede despachar con ese forecast.
+3. **El forecast no cubre ni la mitad del empaque final** (pronóstico normal pero muy bajo): `promedio diario × (FREC + Dias SS) < {p.pct_empaque_cobertura:.0%} × Empq_final`.
+   Si el promedio × (FREC + Dias SS) llega al {p.pct_empaque_cobertura:.0%} del empaque final o más, TDF puede despachar con ese forecast y **se queda en TDF**.
 
 - **Promedio diario** = suma del pronóstico de todos los días que trae el BI (**TOTAL PRONOSTICO**, normalmente 12 días) ÷ N° de días de pronóstico (**PROMEDIO PRONOSTICO DIA**; si el BI trae menos de 12 días, se divide para esos días).
 - **FREC** = días entre despachos del local (**FREC ENTRE DESP**{", o el mayor intervalo real entre despachos" if p.usar_frec_efectiva else ""}).
 - **Dias SS** = días de stock de seguridad de TDF. Se usan **solo para decidir el cambio de método**; no intervienen en el cálculo del Min ni del Max.
 - **Empq_final** = empaque con el que realmente se despacha (el SUBEMPAQUE si existe; si no, el EMPAQUE).
 
-**Importante:** las reglas 1 y 2 aplican **aunque el producto tenga subempaque / Empq_final = 1** y sin importar la cobertura del empaque. Con empaque 1, TDF puede
+**Importante:** las condiciones 1 y 2 aplican **aunque el producto tenga subempaque / Empq_final = 1** y sin importar la cobertura del empaque. Con empaque 1, TDF puede
 completar la necesidad de a una unidad y siempre cubre la exhibición, pero si el forecast es cero o es lineal el pronóstico
 está mal, y TDF trabajaría con un dato incorrecto; por eso pasa a Min/Max.
 
@@ -63,14 +52,15 @@ se asume "Si" para todos.
         st.markdown(f"""
 Todos los valores se redondean al **entero más cercano** (mitad hacia arriba, como el `REDONDEAR` de Excel).
 
+**Cobertura** = `Exhi + CONSUMO DIA × (FREC{" + " + format(p.dias_seguridad_min, "g") + " días de seguridad" if p.dias_seguridad_min > 0 else ""})`: la exhibición más lo que se consume hasta la próxima entrega.
+
 | Regla | Condición | Min |
 |---|---|---|
-| **A** | El consumo diario es **mayor que la exhibición** (`CONSUMO DIA > Exhi`) | `REDONDEAR(CONSUMO DIA × FREC)` |
-| **B** | No aplica A, y además: la exhibición **no alcanza hasta el próximo despacho** (`CONSUMO DIA × (FREC{" + " + format(p.dias_seguridad_min, "g") + " días de seguridad" if p.dias_seguridad_min > 0 else ""}) > Exhi`, es decir, la exhibición dura menos días que la frecuencia de despacho) | `REDONDEAR(CONSUMO DIA × FREC{" + seguridad" if p.dias_seguridad_min > 0 else ""})` |
-| **C** | Cualquier otro caso (la gran mayoría) | `Min = Exhi` (la exhibición) |
+| **A** | El consumo diario es **mayor que la exhibición** (`CONSUMO DIA > Exhi`) | `REDONDEAR(Cobertura)` |
+| **B** | No aplica A y hay consumo (`CONSUMO DIA > 0`) | `REDONDEAR(Cobertura)` |
+| **C** | Sin consumo en el mes | `Min = Exhi` (la exhibición) |
 
-**Idea de fondo:** el Min nunca puede ser menor que la exhibición. Solo sube cuando la venta diaria es
-tan alta que la exhibición no alcanza a cubrir los días hasta el próximo despacho.
+**Idea de fondo:** la exhibición debe llegar **entera** hasta la próxima entrega. Por eso el Min es la exhibición más el consumo que ocurre mientras llega el siguiente despacho. Sin consumo, solo se mantiene la exhibición.
 """)
 
     with st.expander("Paso 3 · Regla del MAX", expanded=True):

@@ -18,17 +18,15 @@ Cámbialo cada vez que descargues el BI: **Días de consumo transcurridos** (el 
 Pasa si cumple **una** de estas vías:
 - **Pronóstico cero** (suma de los días de pronóstico = 0).
 - **Pronóstico lineal:** el modelo aún no aprendió y repite valores. De los **12 días** de pronóstico hay menos de 6 valores únicos (`UNICOS ≤ 5`; único = valor que aparece una sola vez). **Excepción:** si el modelo solo copió la semana (días 8 a 12 iguales a los días 1 a 5, columna `SEMANA COPIADA`), se juzga solo la primera semana: es lineal si tiene un valor repetido y los valores únicos no superan a los repetidos (con empate también es lineal). Ejemplos de primera semana: `5,5,5,5,5,5,5` y `3,3,4,4,5,5,6` → lineales; `2,2,3,4,5,6,6` (3 únicos, 2 repetidos) y 7 valores distintos → no lineales.
-- **Pronóstico total que no cubre la exhibición** (activable): `TOTAL PRONOSTICO < 1 × Exhi` (factor configurable). Si en todos los días de pronóstico no se vende ni lo que cabe en la exhibición, TDF no sostiene la góndola y el producto pasa a Min/Max (Min = Exhibición). No se considera «lineal»: el pronóstico puede ser correcto pero muy bajo.
-- **Retención por inventario (solo pronóstico normal):** si pasaría por el filtro anterior o por las reglas 3 y 4 pero `INV NETO ≥ Exhi + max(consumo real, promedio pronosticado) × FREC` (inventario que cubre la exhibición más el consumo hasta la próxima entrega), se queda en TDF y se reevalúa en la próxima corrida. Con INV NETO ≤ 0 no se retiene; cero y lineal pasan siempre. Se activa o desactiva con una casilla.
-- **Reglas 3 y 4 juntas:** promedio diario del pronóstico < 55 % de la Exhibición **y** promedio × (FREC + Dias SS) < 50 % del empaque final (`Empq_final`). Si cumple la 3 pero el forecast cubre la mitad del empaque, se queda en TDF.
+- **El forecast no cubre ni la mitad del empaque:** `promedio diario del pronóstico × (FREC + Dias SS) < 50 % × Empq_final`. Es la única vía para un pronóstico normal; si no se cumple, el producto se queda en TDF.
 
 La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.
 
 ## Cómo se calcula el Min y el Max
-- **Min:** A) si `CONSUMO DIA > Exhi` → `ROUND(CONSUMO DIA × FREC)`; B) si la Exhi no alcanza hasta el próximo despacho (`CONSUMO DIA × FREC > Exhi`, la exhibición dura menos días que la frecuencia de despacho) → `ROUND(CONSUMO DIA × FREC)` (con un margen opcional de días de seguridad); C) en cualquier otro caso `Min = Exhi`.
+- **Min:** `Cobertura = CONSUMO DIA × (FREC + días de seguridad) + Exhi` (días de seguridad = 0 por defecto). A) `CONSUMO DIA > Exhi` y B) con consumo → `Min = ROUND(Cobertura)`; C) sin consumo → `Min = Exhi`.
 - **Consumo del mes anterior (opcional):** tercer archivo con local, estadístico y consumo del mes anterior. Con la casilla «Usar el consumo del mes anterior» marcada, la base del consumo diario es ese consumo ÷ 30 días (donde haya dato); desmarcada, se usa el consumo del BI; `FUENTE CONSUMO` indica cuál se usó.
 - **Max:** con SUBEMPAQUE > 0 → `Min + SUBEMPAQUE`; sin subempaque → `Min + ROUND(EMPAQUE ÷ 2)`. Opcionalmente, cobertura de N días. Siempre se respeta el SUBEMPAQUE real del BI.
-- Los Dias SS solo se usan para decidir el cambio de método, no para el Min ni el Max.
+- Los Dias SS solo se usan para decidir el cambio de método; el Min usa sus propios días de seguridad.
 
 ## Excel que se descarga
 - **Pronóstico cero:** los productos que pasan a Min/Max, con las columnas Min y Max resaltadas. La columna `EN REVISAR` (`Sí` = prioridad ALTA/MEDIA, `Informativo`, `No`) permite filtrar los casos de la hoja REVISAR; `Exhi` queda junto a `DIF`.

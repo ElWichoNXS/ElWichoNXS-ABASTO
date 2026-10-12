@@ -137,8 +137,8 @@ ESC_REV = alt.Scale(domain=["Sí", "Informativo", "No"], range=[C_MINMAX, C_AMBA
 # ----------------------------------------------------------------------
 _P0 = Params()
 DEFAULTS = {
-    "dias_transcurridos": 5, "factor_prom_exhi": 0.55, "pct_empaque_cobertura": 0.50, "umbral_unicos": 5,
-    "usar_retencion_inventario": True, "usar_total_menor_exhi": True, "factor_total_exhi": 1.0, "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
+    "dias_transcurridos": 5, "pct_empaque_cobertura": 0.50, "umbral_unicos": 5,
+    "factor_consumo_vs_pron": 3.0, "consumo_min_subestima": 2.0,
     "dias_seguridad_min": 0.0, "usar_consumo_anterior": False, "dias_mes_anterior": 30, "usar_frec_efectiva": False, "dias_cobertura_max": 0.0,
     "umbral_venta_prom_dia": 1.0, "sobrestock_dias": 20.0, "consumo_bajo_exhi": 0.5,
     "pct_exhi_en_cobertura": 0.80, "factor_consumo_exhi": 3.0, "sub_dias_venta_empaque": 12.0,
@@ -189,31 +189,12 @@ with st.sidebar:
             "Para convertir el consumo total del mes anterior en consumo diario (total ÷ días).")
 
     with st.expander("2 · Qué pasa de TDF a Min/Max"):
-        p.usar_retencion_inventario = st.checkbox(
-            "Dejar en TDF si el inventario cubre la exhibición", key="p_usar_retencion_inventario",
-            help="Solo para pronóstico normal (ni cero ni lineal). Si el INV NETO cubre la exhibición más el consumo hasta la próxima entrega "
-                 "(frecuencia entre despachos), el producto se queda en TDF: todavía no hace falta Min/Max. Se vuelve a evaluar en cada corrida. "
-                 "La velocidad de consumo es la mayor entre el consumo real y el promedio pronosticado. Con INV NETO en 0 o negativo no se retiene.")
-        p.usar_total_menor_exhi = st.checkbox(
-            "Pasa si el pronóstico total no cubre la exhibición", key="p_usar_total_menor_exhi",
-            help="Filtro 2 (siempre pasa, sin importar las reglas 3 y 4): si la suma del pronóstico de los 12 días es menor a la "
-                 "exhibición, TDF no puede sostener ni la góndola, así que el producto pasa a Min/Max con Min = Exhibición. "
-                 "Desactívalo para usar solo cero, lineal y las reglas 3 y 4.")
-        p.factor_total_exhi = num(
-            "Filtro 2 · pronóstico total menor a (veces la Exhibición)", "factor_total_exhi", 0.1, 5.0,
-            "1.00 = el pronóstico de todos los días no cubre ni una exhibición. Súbelo (por ejemplo 2.0) para que pasen más productos "
-            "y bájalo para que pasen menos.", step=0.1, fmt="%.2f")
-        p.factor_prom_exhi = num(
-            "Regla 3 · Promedio diario del pronóstico menor a (% de la Exhibición)", "factor_prom_exhi", 0.05, 3.0,
-            "Primera mitad de la condición de cambio. El promedio diario del pronóstico (suma de los días ÷ días de pronóstico) "
-            "debe ser menor a este porcentaje de la Exhibición del local. 0.55 = 55 %. Por sí sola NO cambia el método: "
-            "debe cumplirse JUNTO con la regla 4 (cobertura del empaque).", step=0.05, fmt="%.2f")
         p.pct_empaque_cobertura = num(
-            "Regla 4 · Promedio × (FREC + Dias SS) menor a (% del empaque final)", "pct_empaque_cobertura", 0.05, 3.0,
-            "Segunda mitad de la condición. Se calcula promedio diario del pronóstico × (días de frecuencia de despacho + días de stock "
-            "de seguridad). Si ese forecast NO cubre ni este porcentaje del empaque final (0.50 = la mitad), y además se cumple la regla 3, "
-            "el producto pasa a Min/Max. Si SÍ lo cubre, se queda en TDF. Los Dias SS se usan solo para esta decisión (en TDF), no para "
-            "calcular el Min ni el Max.", step=0.05, fmt="%.2f")
+            "Pronóstico bajo: promedio × (FREC + Dias SS) menor a (% del empaque final)", "pct_empaque_cobertura", 0.05, 3.0,
+            "Un producto con pronóstico normal pasa a Min/Max si su forecast no cubre ni este porcentaje del empaque final (0.50 = la mitad): "
+            "promedio diario del pronóstico × (días de frecuencia de despacho + días de stock de seguridad). El sistema no envía nada si la necesidad es "
+            "menor a la mitad del empaque, así que ese producto casi nunca se repone con TDF. Si el forecast SÍ lo cubre, se queda en TDF. "
+            "Los Dias SS se usan solo para esta decisión (en TDF), no para calcular el Min ni el Max.", step=0.05, fmt="%.2f")
         p.umbral_unicos = num(
             "Pronóstico lineal: valores únicos en los 12 días menor o igual a", "umbral_unicos", 0, 12,
             "También pasa a Min/Max el producto con pronóstico LINEAL: el modelo todavía no aprendió y repite valores. "
@@ -506,24 +487,20 @@ with t_res:
     ])
 
     seg = pd.DataFrame({
-        "Segmento": ["Pronóstico cero", "Pronóstico lineal", "Total no cubre la exhibición", "Reglas 3 + 4 (promedio bajo)",
-                     "Retenido: el inventario sostiene la exhibición",
-                     "Rescatado: el forecast cubre el empaque", "Pronóstico normal"],
+        "Segmento": ["Pronóstico cero", "Pronóstico lineal", "Forecast no cubre el empaque", "Pronóstico normal (cubre el empaque)"],
         "Filas": [r["segmento_1_pasa_pronostico_cero"], r["segmento_2_pasa_pronostico_lineal"],
-                  r["segmento_2b_pasa_total_menor_exhibicion"], r["segmento_3_pasa_prom_exhi_y_cobertura_empaque"],
-                  r["segmento_3b_tdf_retenido_por_inventario"], r["segmento_4_tdf_rescatado_por_cobertura_empaque"],
-                  r["segmento_5_tdf_pronostico_normal"]],
-        "Destino": ["Pasa a Min/Max"] * 4 + ["Se queda en TDF"] * 3})
+                  r["segmento_3_pasa_cobertura_empaque"], r["segmento_5_tdf_pronostico_normal"]],
+        "Destino": ["Pasa a Min/Max"] * 3 + ["Se queda en TDF"]})
     g1, g2 = st.columns([1.7, 1])
     with g1:
         grafico("Qué pasa con cada fila del BI", "Cuántas pasan a Min/Max y por qué vía; el resto se queda en TDF.",
-                barras_h(seg, "Segmento", "Filas", "Destino", ESC_DESTINO, orden=list(seg["Segmento"]), alto=285))
+                barras_h(seg, "Segmento", "Filas", "Destino", ESC_DESTINO, orden=list(seg["Segmento"]), alto=200))
     with g2:
         dona = pd.DataFrame({"Destino": ["Pasa a Min/Max", "Se queda en TDF"], "Filas": [n_mm, total_bi - n_mm]})
         dona["Porcentaje"] = dona["Filas"] / max(total_bi, 1)
         ch = alt.Chart(dona).mark_arc(innerRadius=58, stroke="rgba(0,0,0,0)").encode(
             theta="Filas:Q", color=alt.Color("Destino:N", scale=ESC_DESTINO, legend=alt.Legend(title=None, orient="bottom")),
-            tooltip=["Destino:N", alt.Tooltip("Filas:Q", format=","), alt.Tooltip("Porcentaje:Q", format=".1%")]).properties(height=285)
+            tooltip=["Destino:N", alt.Tooltip("Filas:Q", format=","), alt.Tooltip("Porcentaje:Q", format=".1%")]).properties(height=200)
         grafico("Proporción del BI", "Destino de las filas", ch)
 
     g3, g4, g5 = st.columns(3)
@@ -572,16 +549,16 @@ with t_cla:
 
     cA, cB = st.columns(2)
     with cA:
-        # Pronóstico promedio diario vs exhibición: ayuda a ver por qué entran por reglas 3 y 4
-        mu = salida[["% PROM/EXHI"]].dropna() if "% PROM/EXHI" in salida else pd.DataFrame()
+        # Cobertura del forecast sobre el empaque: ayuda a ver por qué entran por la regla de cobertura
+        mu = salida[["% COBERTURA/EMPQ"]].dropna() if "% COBERTURA/EMPQ" in salida else pd.DataFrame()
         if len(mu):
-            mu = mu.assign(v=mu["% PROM/EXHI"].clip(upper=2.0))
+            mu = mu.assign(v=mu["% COBERTURA/EMPQ"].clip(upper=1.5))
             hist = alt.Chart(mu).mark_bar(color=C_MINMAX, cornerRadiusEnd=2).encode(
-                x=alt.X("v:Q", bin=alt.Bin(maxbins=24), title="Promedio del pronóstico ÷ Exhibición (tope 200 %)", axis=alt.Axis(format="%")),
+                x=alt.X("v:Q", bin=alt.Bin(maxbins=24), title="Forecast hasta el próximo despacho ÷ empaque final (tope 150 %)", axis=alt.Axis(format="%")),
                 y=alt.Y("count():Q", title="Filas"),
                 tooltip=[alt.Tooltip("count():Q", title="Filas", format=",")]).properties(height=260)
-            regla = alt.Chart(pd.DataFrame({"x": [p.factor_prom_exhi]})).mark_rule(color=C_AMBAR, strokeDash=[6, 4], size=2).encode(x="x:Q")
-            grafico("Promedio del pronóstico frente a la exhibición", f"La línea marca la regla 3 ({p.factor_prom_exhi:.0%}).", hist + regla)
+            regla = alt.Chart(pd.DataFrame({"x": [p.pct_empaque_cobertura]})).mark_rule(color=C_AMBAR, strokeDash=[6, 4], size=2).encode(x="x:Q")
+            grafico("Cobertura del forecast sobre el empaque", f"La línea marca el corte ({p.pct_empaque_cobertura:.0%} del empaque).", hist + regla)
     with cB:
         cb = salida["CONSUMO DIA"].astype(float)
         cov = (salida["Max"] / cb.where(cb > 0)).dropna()
