@@ -60,6 +60,7 @@ Todos los valores se redondean al **entero más cercano** (mitad hacia arriba, c
 | **A** | El consumo diario es **mayor que la exhibición** (`CONSUMO DIA > Exhi`) | `REDONDEAR(Cobertura)` |
 | **B** | No aplica A y hay consumo (`CONSUMO DIA > 0`) | `REDONDEAR(Cobertura)` |
 | **C** | Sin consumo en el mes | `Min = Exhi` (la exhibición) |
+| **D** | **Sobrestock:** el Min calculado es mayor que la exhibición y `DG MIN = Min ÷ CONSUMO DIA` supera **{p.dg_sobrestock_min:g} días** | `Min = Exhi + SUBEMPAQUE` (si tiene subempaque) o `Exhi + REDONDEAR(EMPAQUE ÷ 2)` (si no). Nunca sube el Min calculado. |
 
 **Idea de fondo:** la exhibición debe llegar **entera** hasta la próxima entrega. Por eso el Min es la exhibición más el consumo que ocurre mientras llega el siguiente despacho. Sin consumo, solo se mantiene la exhibición.
 """)

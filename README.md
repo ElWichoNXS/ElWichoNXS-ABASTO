@@ -23,7 +23,7 @@ Pasa si cumple **una** de estas vías:
 La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.
 
 ## Cómo se calcula el Min y el Max
-- **Min:** `Cobertura = CONSUMO DIA × (FREC + días de seguridad) + Exhi` (días de seguridad = 0 por defecto). A) `CONSUMO DIA > Exhi` y B) con consumo → `Min = ROUND(Cobertura)`; C) sin consumo → `Min = Exhi`.
+- **Min:** `Cobertura = CONSUMO DIA × (FREC + días de seguridad) + Exhi` (días de seguridad = 0 por defecto). A) `CONSUMO DIA > Exhi` y B) con consumo → `Min = ROUND(Cobertura)`; C) sin consumo → `Min = Exhi`. **D) Sobrestock:** si el Min es mayor que la Exhi y `DG MIN` (Min ÷ consumo diario) supera 20 días (configurable), el Min baja a `Exhi + SUBEMPAQUE` (con subempaque) o `Exhi + ROUND(EMPAQUE ÷ 2)` (sin subempaque); nunca sube el Min.
 - **Consumo del mes anterior (opcional):** tercer archivo con local, estadístico y consumo del mes anterior. Con la casilla «Usar el consumo del mes anterior» marcada, la base del consumo diario es ese consumo ÷ 30 días (donde haya dato); desmarcada, se usa el consumo del BI; `FUENTE CONSUMO` indica cuál se usó.
 - **Max:** con SUBEMPAQUE > 0 → `Min + SUBEMPAQUE`; sin subempaque → `Min + ROUND(EMPAQUE ÷ 2)`. Opcionalmente, cobertura de N días. Siempre se respeta el SUBEMPAQUE real del BI.
 - Los Dias SS del BI solo se usan para decidir el cambio de método; el Min usa sus propios días de seguridad.
