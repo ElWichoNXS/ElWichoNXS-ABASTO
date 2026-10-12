@@ -56,7 +56,7 @@ Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `VALORES U
 **Consumo del mes anterior (opcional).** Con pocos días transcurridos el consumo del mes es poco confiable. Si cargas el archivo del mes anterior (por local e ítem) **y marcas la casilla «Usar el consumo del mes anterior»**{"" if p.usar_consumo_anterior else " (ahora **desmarcada**)"}, la base del consumo diario es `consumo del mes anterior ÷ {p.dias_mes_anterior} días`. Donde no hay dato del mes anterior, o si la casilla está desmarcada, se usa el consumo del BI. La columna `FUENTE CONSUMO` del Excel indica cuál se usó en cada fila.
 
 **APTO.** Se toma del maestro de productos (columna *Apto para PTL*). Si no cargas el maestro,
-se asume "Si" para todos y la regla B del Min puede aplicarse a más productos de los debidos.
+se asume "Si" para todos.
 """)
 
     with st.expander("Paso 2 · Regla del MIN (se evalúa en este orden)", expanded=True):
@@ -66,7 +66,7 @@ Todos los valores se redondean al **entero más cercano** (mitad hacia arriba, c
 | Regla | Condición | Min |
 |---|---|---|
 | **A** | El consumo diario es **mayor que la exhibición** (`CONSUMO DIA > Exhi`) | `REDONDEAR(CONSUMO DIA × FREC)` |
-| **B** | No aplica A, y además: el producto es **apto** y la exhibición **no alcanza hasta el próximo despacho** (`CONSUMO DIA × (FREC{" + " + format(p.dias_seguridad_min, "g") + " días de seguridad" if p.dias_seguridad_min > 0 else ""}) > Exhi`, es decir, la exhibición dura menos días que la frecuencia de despacho) | `REDONDEAR(CONSUMO DIA × FREC{" + seguridad" if p.dias_seguridad_min > 0 else ""})` |
+| **B** | No aplica A, y además: la exhibición **no alcanza hasta el próximo despacho** (`CONSUMO DIA × (FREC{" + " + format(p.dias_seguridad_min, "g") + " días de seguridad" if p.dias_seguridad_min > 0 else ""}) > Exhi`, es decir, la exhibición dura menos días que la frecuencia de despacho) | `REDONDEAR(CONSUMO DIA × FREC{" + seguridad" if p.dias_seguridad_min > 0 else ""})` |
 | **C** | Cualquier otro caso (la gran mayoría) | `Min = Exhi` (la exhibición) |
 
 **Idea de fondo:** el Min nunca puede ser menor que la exhibición. Solo sube cuando la venta diaria es

@@ -25,7 +25,7 @@ Pasa si cumple **una** de estas vías:
 La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.
 
 ## Cómo se calcula el Min y el Max
-- **Min:** A) si `CONSUMO DIA > Exhi` → `ROUND(CONSUMO DIA × FREC)`; B) si es apto y la Exhi no alcanza hasta el próximo despacho (`CONSUMO DIA × FREC > Exhi`, la exhibición dura menos días que la frecuencia de despacho) → `ROUND(CONSUMO DIA × FREC)` (con un margen opcional de días de seguridad); C) en cualquier otro caso `Min = Exhi`.
+- **Min:** A) si `CONSUMO DIA > Exhi` → `ROUND(CONSUMO DIA × FREC)`; B) si la Exhi no alcanza hasta el próximo despacho (`CONSUMO DIA × FREC > Exhi`, la exhibición dura menos días que la frecuencia de despacho) → `ROUND(CONSUMO DIA × FREC)` (con un margen opcional de días de seguridad); C) en cualquier otro caso `Min = Exhi`.
 - **Consumo del mes anterior (opcional):** tercer archivo con local, estadístico y consumo del mes anterior. Con la casilla «Usar el consumo del mes anterior» marcada, la base del consumo diario es ese consumo ÷ 30 días (donde haya dato); desmarcada, se usa el consumo del BI; `FUENTE CONSUMO` indica cuál se usó.
 - **Max:** con SUBEMPAQUE > 0 → `Min + SUBEMPAQUE`; sin subempaque → `Min + ROUND(EMPAQUE ÷ 2)`. Opcionalmente, cobertura de N días. Siempre se respeta el SUBEMPAQUE real del BI.
 - Los Dias SS solo se usan para decidir el cambio de método, no para el Min ni el Max.

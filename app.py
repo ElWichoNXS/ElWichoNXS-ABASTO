@@ -476,7 +476,7 @@ elif f_ant and not p.usar_consumo_anterior:
 elif p.usar_consumo_anterior and not f_ant:
     st.warning("La casilla «Usar el consumo del mes anterior» está marcada, pero no cargaste el archivo 3: se usa el consumo del BI.")
 if not f_ap:
-    st.info("Sin maestro de productos: se asumió APTO = 'Si' para todos. Afecta la regla B del Min y las "
+    st.info("Sin maestro de productos: se asumió APTO = 'Si' para todos. Afecta las "
             "sugerencias de subempaque (no se descarta ningún producto por no ser apto).")
 
 total_bi = r["segmento_total_BI"]

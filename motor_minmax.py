@@ -204,7 +204,7 @@ def leer_bi(archivo) -> pd.DataFrame:
 
 def leer_aptos(archivo) -> pd.DataFrame:
     """Maestro de productos: columnas 'Estadístico' y 'Apto para PTL' (Si / No).
-    'Apto para PTL' se usa en la regla B del Min y como aptitud para subempaque."""
+    'Apto para PTL' se usa como aptitud para subempaque."""
     a = pd.read_excel(archivo)
     a.columns = [str(c).strip() for c in a.columns]
     col_e = next(c for c in a.columns if c.lower().startswith("estad"))
@@ -435,7 +435,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     cobertura = R * (F + p.dias_seguridad_min)                 # lo que se consume hasta el próximo despacho (+ días de seguridad)
 
     caso_a = R > E                                             # consumo diario > exhibición: se agota en menos de un día
-    caso_b = (~caso_a) & (cobertura > E) & (df["APTO"] == "Si")  # la exhibición no alcanza hasta el próximo despacho
+    caso_b = (~caso_a) & (cobertura > E)                        # la exhibición no alcanza hasta el próximo despacho
 
     min_ = np.where(caso_a, xround(cobertura, 0),
             np.where(caso_b, xround(cobertura, 0), E))
@@ -838,7 +838,7 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
                        + (f" Se usó el consumo del mes anterior / {p.dias_mes_anterior} días como base (donde hay dato por local e ítem)." if p.usar_consumo_anterior else "")),
         ("FREC", f"Días entre despachos: {frec}."),
         ("Min · regla A", "Si CONSUMO DIA > Exhi: Min = ROUND(CONSUMO DIA x FREC; 0)."),
-        ("Min · regla B", f"Si el producto es apto y la Exhi no alcanza hasta el próximo despacho (CONSUMO DIA x FREC{' + ' + format(p.dias_seguridad_min, 'g') + ' días de seguridad' if p.dias_seguridad_min > 0 else ''} > Exhi): Min = ROUND(CONSUMO DIA x FREC; 0)."),
+        ("Min · regla B", f"Si la Exhi no alcanza hasta el próximo despacho (CONSUMO DIA x FREC{' + ' + format(p.dias_seguridad_min, 'g') + ' días de seguridad' if p.dias_seguridad_min > 0 else ''} > Exhi): Min = ROUND(CONSUMO DIA x FREC; 0)."),
         ("Min · regla C", "Cualquier otro caso (la mayoría): Min = Exhi."),
         ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
                 f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
