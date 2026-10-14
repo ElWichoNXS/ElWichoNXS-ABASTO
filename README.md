@@ -39,12 +39,8 @@ Cada parámetro de la barra lateral tiene un signo ❓ con su explicación, y al
 
 ## Solución del RAG de abastecimiento (`rag_manual.py`)
 
-Replica el método manual del analista sobre el archivo `RAG_ABASTECIMIENTO_SECOS`:
-`python rag_manual.py RAG.xlsx Productos.xlsx salida.xlsx [días_transcurridos]`
+Replica el método manual del analista: `python rag_manual.py RAG.xlsx salida.xlsx [dias_venta] [min_repeticiones]`
 
-- Hojas 1–6: `CONS DIA = CONSUMO_ACUM_30D ÷ días transcurridos` (fecha BI − 1), `MINIMO = EXHIBICION`,
-  `MAXIMO = ROUND(MINIMO + EMPAQUE/2)`, más `DG MAX`, `DIF`, `% Empaque` y `SE CONFIGURA`
-  (`CORREGIR` si ROQ < EMPAQUE/2). Todo con fórmulas de Excel.
-- Hoja 7 (TDF con LTC): Min/Max con la misma regla solo donde no se puede cargar subempaque
-  (no apto PTL, cerveza/agua/funda, o bodega sin STOCK_FISICO). Criterio pendiente de confirmar.
-- Se agrega la hoja de conteo de casos por producto de la hoja 7.
+- Divisor del consumo = días de venta completos del mes (el día de hoy no cuenta: 14-oct → 13); se toma de la FECHA del archivo.
+- Hojas 1–6: `CONS DIA`, `MINIMO = EXHIBICION`, `MAXIMO = ROUND(MINIMO + EMPAQUE/2)`, `DG MAX`, `DIF`, `% Empaque`, `SE CONFIGURA` (CORREGIR si ROQ < EMPAQUE/2). Fórmulas de Excel.
+- Hoja 7: se configuran solo los estadísticos que se repiten 5 o más veces (tabla dinámica); el resto queda pendiente.

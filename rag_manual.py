@@ -1,6 +1,6 @@
 """Soluciona el RAG de abastecimiento con el método manual de Álvaro.
 
-Uso:  python rag_manual.py RAG.xlsx Productos.xlsx salida.xlsx [dias_transcurridos]
+Uso:  python rag_manual.py RAG.xlsx salida.xlsx [dias_venta] [min_repeticiones]
 
 Hojas 1-6 (se insertan columnas, todo con fórmulas de Excel):
   CONS DIA    = CONSUMO_ACUM_30D / dias_transcurridos   (13 el 14-oct; = fecha BI - 1 día)
@@ -8,24 +8,29 @@ Hojas 1-6 (se insertan columnas, todo con fórmulas de Excel):
   MAXIMO      = ROUND(MINIMO + EMPAQUE/2, 0)
   DG MAX = MAXIMO/CONS DIA | DIF = MAX-MIN | % Empaque = DIF/EMPAQUE
   SE CONFIGURA= "CORREGIR" si ROQ < EMPAQUE/2, si no "OK"
-Hoja 7 (TDF con LTC, sin columnas nuevas): MINIMO/MAXIMO con las mismas reglas, pero solo
-  en filas donde NO se puede cargar subempaque (no apto PTL, familia/funda no subempacable,
-  o bodega sin STOCK_FISICO). Las que sí se pueden subempacar quedan en blanco (cargar
-  subempaque sugerido). Se añade la hoja DINAMICA con conteo de casos por producto.
+Hoja 7 (TDF con LTC, sin columnas nuevas): se priorizan los estadísticos que más se repiten
+  (>= min_repeticiones casos, por defecto 5; ver hoja DINAMICA). A todas las filas de esos
+  productos se les escribe MINIMO=EXHIBICION y MAXIMO=ROUND(MINIMO+EMPAQUE/2). El resto queda
+  sin configurar. Se añade la hoja DINAMICA con el conteo de casos por producto.
 """
 import sys, pandas as pd, openpyxl
 from openpyxl.styles import PatternFill, Font
 from copy import copy
 
-EXC = {'CERVEZAS', 'CERVEZAS SIN ALCOHOL', 'AGUAS'}
 AMARILLO = PatternFill('solid', fgColor='FFFF00')
 
-def main(rag, prod, out, dias=13):
-    P = pd.read_excel(prod)
-    apto = {int(c): str(a).strip().upper() == 'SI' for c, a in zip(
-        pd.to_numeric(P['Estadístico'], errors='coerce'), P['Apto para PTL']) if pd.notna(c)}
+def main(rag, out, dias=None, minrep=5):
     wb = openpyxl.load_workbook(rag)
     resumen = {}
+    if dias is None:   # días de venta completos = día de la FECHA - 1
+        f = pd.to_datetime(wb['TAREA_1'].cell(4, 1).value, dayfirst=True)
+        dias = f.day - 1
+    cnt = {}
+    w7 = wb['TAREA_7']; h7 = {w7.cell(3, c).value: c for c in range(1, w7.max_column + 1)}
+    for r in range(4, w7.max_row + 1):
+        k = w7.cell(r, h7['COD_PRODUCTO']).value
+        if k is not None:
+            cnt[k] = cnt.get(k, 0) + 1
     for ws in wb.worksheets:
         if not ws.title.startswith('TAREA_'):
             continue
@@ -56,13 +61,8 @@ def main(rag, prod, out, dias=13):
                 cod = ws.cell(r, h['COD_PRODUCTO']).value
                 if cod is None:
                     continue
-                fam = str(ws.cell(r, h['FAMILIA']).value or '').upper() if 'FAMILIA' in h else ''
-                desc = str(ws.cell(r, h['DESC_PRODUCTO']).value or '').upper()
-                no_sub = fam in EXC or 'FUNDA' in fam or 'FUNDA' in desc
-                puede = apto.get(int(cod), False) and not no_sub
-                bod = ws.cell(r, h['STOCK_FISICO_BODEGA']).value or 0
-                if puede and bod > 0:
-                    continue         # candidato a cargar subempaque sugerido
+                if cnt[cod] < minrep:
+                    continue
                 ws[f'{L("MINIMO")}{r}'] = f'=+{L("EXHIBICION")}{r}'
                 ws[f'{L("MAXIMO")}{r}'] = f'=+ROUND({L("MINIMO")}{r}+({L("EMPAQUE")}{r}/2),0)'
                 for k in ('MINIMO', 'MAXIMO'):
@@ -70,13 +70,6 @@ def main(rag, prod, out, dias=13):
                 hecho += 1
             resumen[n] = (hecho, ws.max_row - 3)
     # hoja dinámica: casos por producto en TAREA_7
-    ws7 = wb['TAREA_7']
-    h = {ws7.cell(3, c).value: c for c in range(1, ws7.max_column + 1)}
-    cnt = {}
-    for r in range(4, ws7.max_row + 1):
-        cod = ws7.cell(r, h['COD_PRODUCTO']).value
-        if cod is not None:
-            cnt[cod] = cnt.get(cod, 0) + 1
     dn = wb.create_sheet('DINAMICA DE LA HOJA 7')
     dn.append(['COD_PRODUCTO', 'Cantidad de casos'])
     for k, v in sorted(cnt.items(), key=lambda x: -x[1]):
@@ -85,8 +78,8 @@ def main(rag, prod, out, dias=13):
     for c in dn[1]:
         c.font = Font(bold=True)
     wb.save(out)
-    print(resumen)
+    print('días de venta:', dias, resumen)
 
 if __name__ == '__main__':
     a = sys.argv
-    main(a[1], a[2], a[3], int(a[4]) if len(a) > 4 else 13)
+    main(a[1], a[2], int(a[3]) if len(a) > 3 else None, int(a[4]) if len(a) > 4 else 5)
