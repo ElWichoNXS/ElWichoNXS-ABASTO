@@ -36,3 +36,15 @@ La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.
 
 ## Parámetros
 Cada parámetro de la barra lateral tiene un signo ❓ con su explicación, y al final de la página hay una sección con las reglas (se actualiza con los valores configurados). Modo claro/oscuro: menú ⋮ → Settings → Theme.
+
+## Solución del RAG de abastecimiento (`rag_manual.py`)
+
+Replica el método manual del analista sobre el archivo `RAG_ABASTECIMIENTO_SECOS`:
+`python rag_manual.py RAG.xlsx Productos.xlsx salida.xlsx [días_transcurridos]`
+
+- Hojas 1–6: `CONS DIA = CONSUMO_ACUM_30D ÷ días transcurridos` (fecha BI − 1), `MINIMO = EXHIBICION`,
+  `MAXIMO = ROUND(MINIMO + EMPAQUE/2)`, más `DG MAX`, `DIF`, `% Empaque` y `SE CONFIGURA`
+  (`CORREGIR` si ROQ < EMPAQUE/2). Todo con fórmulas de Excel.
+- Hoja 7 (TDF con LTC): Min/Max con la misma regla solo donde no se puede cargar subempaque
+  (no apto PTL, cerveza/agua/funda, o bodega sin STOCK_FISICO). Criterio pendiente de confirmar.
+- Se agrega la hoja de conteo de casos por producto de la hoja 7.
