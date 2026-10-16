@@ -49,20 +49,9 @@ Las columnas `TOTAL PRONOSTICO`, `PROMEDIO PRONOSTICO DIA`, `UNICOS`, `VALORES U
 se asume "Si" para todos.
 """)
 
-    with st.expander("Paso 2 · Regla del MIN (se evalúa en este orden)", expanded=True):
-        st.markdown(f"""
-Todos los valores se redondean al **entero más cercano** (mitad hacia arriba, como el `REDONDEAR` de Excel).
-
-**Cobertura** = `Exhi + CONSUMO DIA × (FREC{" + " + format(p.dias_seguridad_min, "g") + " días de seguridad" if p.dias_seguridad_min > 0 else ""})`: la exhibición más lo que se consume hasta la próxima entrega.
-
-| Regla | Condición | Min |
-|---|---|---|
-| **A** | El consumo diario es **mayor que la exhibición** (`CONSUMO DIA > Exhi`) | `REDONDEAR(Cobertura)` |
-| **B** | No aplica A y hay consumo (`CONSUMO DIA > 0`) | `REDONDEAR(Cobertura)` |
-| **C** | Sin consumo en el mes | `Min = Exhi` (la exhibición) |
-| **D** | **Sobrestock:** el Min calculado es mayor que la exhibición y `DG MIN = Min ÷ CONSUMO DIA` supera **{p.dg_sobrestock_min:g} días** | `Min = Exhi + SUBEMPAQUE` (si tiene subempaque) o `Exhi + REDONDEAR(EMPAQUE ÷ 2)` (si no). Nunca sube el Min calculado. |
-
-**Idea de fondo:** la exhibición debe llegar **entera** hasta la próxima entrega. Por eso el Min es la exhibición más el consumo que ocurre mientras llega el siguiente despacho. Sin consumo, solo se mantiene la exhibición.
+    with st.expander("Paso 2 · Regla del MIN", expanded=True):
+        st.markdown("""
+**Min = Exhibición**, siempre. El Min nunca lleva unidades adicionales: lo que se necesita para cubrir el consumo hasta la próxima entrega se resuelve en el Max.
 """)
 
     with st.expander("Paso 3 · Regla del MAX", expanded=True):
@@ -76,6 +65,9 @@ El Max es el Min más un **incremento mínimo de despacho**:
 |---|---|
 | Tiene **SUBEMPAQUE** (> 0) | `Min + SUBEMPAQUE` |
 | **No** tiene subempaque | `Min + REDONDEAR(EMPAQUE ÷ 2)` |
+
+**Consumo hasta el próximo despacho:** si el consumo diario es alto y ese Max no alcanza para sostener la exhibición más lo que se vende hasta que llegue
+el siguiente despacho, el Max sube a `REDONDEAR(Exhi + CONSUMO DIA × (FREC{" + " + format(p.dias_seguridad_min, "g") + " días de seguridad" if p.dias_seguridad_min > 0 else ""}))`.
 
 **Por qué EMPAQUE ÷ 2:** el sistema no despacha cuando la cantidad a reponer es menor a la mitad del empaque.
 Por eso el Max debe estar al menos media caja por encima del Min.

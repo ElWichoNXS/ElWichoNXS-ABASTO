@@ -207,12 +207,8 @@ with st.sidebar:
     with st.expander("3 · Cálculo del Min"):
         p.dias_seguridad_min = num(
             "Días de seguridad sobre la frecuencia de despacho", "dias_seguridad_min", 0.0, 10.0,
-            "El Min sube hasta cubrir el consumo de los días hasta el próximo despacho (la frecuencia de despacho de cada local) "
-            "cuando la exhibición no alcanza. Aquí puedes sumar días extra de colchón. 0 = cubrir exactamente hasta el próximo despacho.", step=0.5)
-        p.dg_sobrestock_min = num(
-            "Sobrestock del Min: DG MIN mayor a (días)", "dg_sobrestock_min", 1.0, 120.0,
-            "Si el Min es mayor que la exhibición y cubre más de estos días de consumo (DG MIN = Min ÷ consumo diario), se considera sobrestock "
-            "y el Min baja a la Exhibición + SUBEMPAQUE (si tiene subempaque) o a la Exhibición + la mitad del EMPAQUE (si no tiene).", step=1.0, fmt="%.0f")
+            "El Min es siempre la exhibición. Estos días extra se suman a la frecuencia de despacho al calcular cuánto consumo debe cubrir el Max "
+            "hasta el próximo despacho. 0 = cubrir exactamente hasta el próximo despacho.", step=0.5)
         p.usar_frec_efectiva = st.checkbox(
             "Usar el mayor intervalo real entre despachos", key="p_usar_frec_efectiva",
             help="Apagado (recomendado): se usa FREC ENTRE DESP tal como viene del BI (promedio de días entre "
@@ -487,7 +483,7 @@ with t_res:
         ("Filas del BI", n(total_bi), "Local × estadístico en TDF", C_TDF),
         ("Pasan a Min/Max", n(n_mm), f"{n_mm / max(total_bi, 1):.1%} del BI", C_MINMAX),
         ("Min = Exhibición", n(r["regla_C"]), f"{r['regla_C'] / max(n_mm, 1):.0%} de los que pasan", C_VERDE),
-        ("Min ajustado (A + B)", n(r["regla_A"] + r["regla_B"]), f"{n(r['regla_D'])} más bajaron por sobrestock", C_AMBAR),
+        ("Max ampliado por consumo", n(r["max_por_ciclo"]), "Max sube para cubrir hasta el próximo despacho", C_AMBAR),
         ("Casos a revisar", n(n_rev_si), f"{n(n_info)} más son informativos", ROJO),
     ])
 
@@ -510,9 +506,9 @@ with t_res:
 
     g3, g4, g5 = st.columns(3)
     with g3:
-        rm = pd.DataFrame({"Regla": ["C · Min = Exhibición", "D · Sobrestock", "B · Exhibición corta", "A · Consumo > Exhi"],
-                           "Filas": [r["regla_C"], r["regla_D"], r["regla_B"], r["regla_A"]]})
-        grafico("Cómo se calculó el Min", "Regla aplicada a cada fila que pasa a Min/Max.",
+        rm = pd.DataFrame({"Regla": ["Max = Min + incremento", "Max ampliado por consumo"],
+                           "Filas": [r["regla_C"] - r["max_por_ciclo"], r["max_por_ciclo"]]})
+        grafico("Cómo quedó el Max", "Incremento normal o ampliado para cubrir hasta el próximo despacho.",
                 barras_h(rm, "Regla", "Filas", orden=list(rm["Regla"]), alto=150))
     with g4:
         vc = salida["_regla_max"].map(lambda x: "Min + subempaque" if "SUBEMPAQUE" in str(x) else "Min + empaque ÷ 2").value_counts()

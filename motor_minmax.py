@@ -34,7 +34,7 @@ class Params:
     dias_mes_anterior: int = 30          # días del mes anterior (para pasar su consumo total a consumo diario)
     usar_frec_efectiva: bool = False     # False: FREC del BI (promedio). True: MAYOR intervalo real entre despachos
     # --- Cálculo del Max ---
-    dg_sobrestock_min: float = 20.0      # Min > Exhi y DG MIN (Min / consumo diario) > este valor = sobrestock -> Min = Exhi + incremento (sub o EMPAQUE/2)
+    dg_sobrestock_min: float = 20.0      # (en desuso: el Min ahora es siempre la exhibición)
     dias_cobertura_max: float = 0.0      # 0 = desactivado (Max = Min + SUBEMPAQUE o EMPAQUE/2)
     # --- Diagnóstico del pronóstico ---
     umbral_venta_prom_dia: float = 1.0   # pronóstico promedio < 1 unid/día = "insuficiente"
@@ -130,7 +130,7 @@ def _es_lineal(n_unicos, n_repetidos):
     return (r >= 1) & (u <= r)
 
 
-def _calc_max(minimo, R, empaque, sub, p: "Params"):
+def _calc_max(minimo, R, empaque, sub, p: "Params", frec=None):
     """Max = Min + incremento. Incremento = SUBEMPAQUE; si es 0, EMPAQUE/2 (con ROQ < EMPAQUE/2
     el sistema no despacha). Opcional: cobertura de N días en múltiplos del incremento."""
     minimo = np.asarray(minimo, dtype=float); R = np.asarray(R, dtype=float)
@@ -144,6 +144,12 @@ def _calc_max(minimo, R, empaque, sub, p: "Params"):
     regla = np.where(incr > incr_base, "Cobertura (R x días objetivo)",
              np.where(sub > 0, "Min + SUBEMPAQUE", "Min + EMPAQUE/2"))
     mx = np.maximum(a_entero(minimo + incr).values, minimo.astype("int64")).astype("int64")
+    if frec is not None:
+        # El Max debe alcanzar para sostener la exhibición (Min) más el consumo hasta el próximo despacho.
+        ciclo = np.where(R > 0, xround(minimo + R * (np.asarray(frec, dtype=float) + p.dias_seguridad_min), 0), 0).astype("int64")
+        sube = ciclo > mx
+        mx = np.where(sube, ciclo, mx).astype("int64")
+        regla = np.where(sube, "Cobertura hasta el próximo despacho", regla)
     return mx, regla
 
 
@@ -433,29 +439,15 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     # Cobertura = exhibición + consumo hasta la próxima entrega (frecuencia entre despachos + días de seguridad)
     cobertura = R * (F + p.dias_seguridad_min) + E
 
-    caso_a = R > E                                             # consumo diario > exhibición: se agota en menos de un día
-    caso_b = (~caso_a) & (R > 0)                               # hay consumo: la exhibición debe llegar entera a la próxima entrega
-
-    min_ = np.where(R > 0, xround(cobertura, 0), E)
-    # Sobrestock: si el Min supera la exhibicion y cubre mas de N dias de consumo (DG MIN > N),
-    # el Min baja a Exhi + incremento (SUBEMPAQUE si tiene; si no, ROUND(EMPAQUE/2)). Nunca sube el Min.
-    incr_min = np.where(df["SUBEMPAQUE"].values > 0, df["SUBEMPAQUE"].values.astype(float),
-                        xround(df["EMPAQUE"].values.astype(float) / 2, 0))
-    Rv = np.asarray(R, dtype=float)
-    dg_pre = np.where(Rv > 0, min_ / np.where(Rv > 0, Rv, 1), 0.0)
-    sobre = (Rv > 0) & (min_ > E.values) & (dg_pre > p.dg_sobrestock_min) & (E.values + incr_min < min_)   # solo si realmente baja
-    min_ = np.where(sobre, E.values + incr_min, min_)
-    caso_a = caso_a & ~sobre
-    caso_b = caso_b & ~sobre
+    # El Min es siempre la exhibición. El consumo hasta el próximo despacho se cubre en el Max.
+    min_ = E.values.astype(float)
+    sobre = np.zeros(len(df), dtype=bool)
+    caso_a = pd.Series(False, index=df.index); caso_b = pd.Series(False, index=df.index)
     df["Min"] = a_entero(min_).values
-    seg_txt = f"+{p.dias_seguridad_min:g}" if p.dias_seguridad_min > 0 else ""
-    df["_regla_min"] = np.where(sobre, f"D: sobrestock (DG MIN>{p.dg_sobrestock_min:g}) -> Min = Exhi + SUBEMPAQUE (o EMPAQUE/2)",
-                         np.where(caso_a, f"A: consumo>exhi -> ROUND(Exhi+R*(FREC{seg_txt}),0)",
-                         np.where(caso_b, f"B: con consumo -> ROUND(Exhi+R*(FREC{seg_txt}),0)",
-                                  "C: sin consumo -> Min = Exhi")))
+    df["_regla_min"] = "Min = Exhibición"
 
     # 6) MAX -------------------------------------------------------------------
-    mx, regla = _calc_max(df["Min"], R, df["EMPAQUE"], df["SUBEMPAQUE"], p)
+    mx, regla = _calc_max(df["Min"], R, df["EMPAQUE"], df["SUBEMPAQUE"], p, frec=df["FREC EFECTIVA"])
     df["Max"] = mx
     df["_regla_max"] = regla
     assert df["Min"].dtype == "int64" and df["Max"].dtype == "int64"
@@ -477,10 +469,9 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
         "filas_bi": n_in,
         "filas_resultado": len(df),
         **{f"segmento_{k}": v for k, v in seg.items()},
-        "regla_A": int(caso_a.sum()),
-        "regla_B": int(caso_b.sum()),
-        "regla_C": int((~caso_a & ~caso_b & ~sobre).sum()),
-        "regla_D": int(sobre.sum()),
+        "regla_A": 0, "regla_B": 0, "regla_D": 0,
+        "regla_C": len(df),
+        "max_por_ciclo": int((df["_regla_max"] == "Cobertura hasta el próximo despacho").sum()),
         "skus_sin_dato_apto": sin_apto if aptos is not None else None,
         "filas_con_aviso_revisar": int((df["DG EXHI = DG MIN"] == "REVISAR").sum()),
         "filas_consumo_mes_anterior": int((df["FUENTE CONSUMO"] == "Mes anterior").sum()) if usa_ant else None,
@@ -844,11 +835,10 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("CONSUMO DIA", f"CONSUMOS ACU (consumo acumulado del mes que entrega el BI) / {p.dias_transcurridos} días transcurridos. "
                        + (f" Se usó el consumo del mes anterior / {p.dias_mes_anterior} días como base (donde hay dato por local e ítem)." if p.usar_consumo_anterior else "")),
         ("FREC", f"Días entre despachos: {frec}."),
-        ("Min · regla A", f"Si CONSUMO DIA > Exhi: Min = ROUND(Exhi + CONSUMO DIA x FREC{' + días de seguridad' if p.dias_seguridad_min > 0 else ''}; 0)."),
-        ("Min · regla B", f"Si hay consumo (y no aplica A): Min = ROUND(Exhi + CONSUMO DIA x FREC{' + días de seguridad' if p.dias_seguridad_min > 0 else ''}; 0). La exhibición debe llegar entera hasta la próxima entrega."),
-        ("Min · regla C", "Sin consumo en el mes: Min = Exhi."),
+        ("Min", "Min = Exhibición, siempre."),
         ("Max", f"Con SUBEMPAQUE > 0: Max = Min + SUBEMPAQUE. Sin subempaque: Max = Min + ROUND(EMPAQUE / 2; 0), porque el sistema no despacha si lo "
-                f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI."),
+                f"que falta es menos de media caja{cob}. Siempre se respeta el SUBEMPAQUE real del BI. Si con ese incremento el Max no alcanza para sostener la exhibición más el consumo hasta el próximo despacho "
+                f"(ROUND(Exhi + CONSUMO DIA x FREC{' + días de seguridad' if p.dias_seguridad_min > 0 else ''}; 0)), el Max sube a ese valor."),
         ("Hoja REVISAR", f"Solo casos extremos: inventario físico negativo (ALTA); consumo diario >= {p.factor_consumo_exhi:g} veces la Exhibición (ALTA); "
                          f"sobre stock crítico, con Max / CONSUMO DIA > {p.sobrestock_dias:g} días (MEDIA); pronóstico que subestima el consumo real, con CONSUMO DIA >= {p.factor_consumo_vs_pron:g} veces el promedio del pronóstico y al menos {p.consumo_min_subestima:g} u/día (MEDIA); y sobre stock por cubrir la exhibición (solo informativo: la exhibición la define el área comercial y siempre se abastece). "
                          "Cada caso trae ACCIÓN PRINCIPAL y SUGERENCIA A REALIZAR: corregir el dato, notificar al área comercial, subempacar si es viable y reduce el Max (con ALERTA PVP si el PVP es menor al mínimo), o dejarlo mapeado. "
@@ -1143,13 +1133,8 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
         # 3) Regla del Min
         titulo("3. Cómo quedó el Min (regla aplicada)")
         if "_regla_min" in df:
-            nombres_min = {"A": "A · consumo diario > Exhi → Min = ROUND(Exhi + consumo x FREC)",
-                           "B": "B · con consumo → Min = ROUND(Exhi + consumo x FREC)",
-                           "C": "C · sin consumo → Min = Exhi",
-                           "D": f"D · sobrestock (DG MIN > {p.dg_sobrestock_min:g} días) → Min = Exhi + SUBEMPAQUE (o + EMPAQUE/2)"}
-            claves = {str(k)[:1]: k for k in df["_regla_min"].dropna().unique()}
-            filas = por_grupo("_regla_min", df, orden=[claves[k] for k in "ABCD" if k in claves],
-                              nombres={claves[k]: nombres_min[k] for k in claves if k in nombres_min})
+            claves = {str(k): k for k in df["_regla_min"].dropna().unique()}
+            filas = por_grupo("_regla_min", df, orden=list(claves))
             tabla(["Regla del Min", "Filas", "Estadísticos distintos", "% de los que pasan"], filas)
 
         # 4) Regla del Max
@@ -1269,7 +1254,6 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             ("Usar el consumo del mes anterior como base", "Sí" if p.usar_consumo_anterior else "No"),
             ("Días del mes anterior", p.dias_mes_anterior),
             ("Usar el mayor intervalo real entre despachos", "Sí" if p.usar_frec_efectiva else "No"),
-            ("Sobrestock del Min · DG MIN mayor a (días)", p.dg_sobrestock_min),
             ("Cobertura adicional del Max (días)", p.dias_cobertura_max),
             ("Sobre stock crítico: Max cubre más de (días)", p.sobrestock_dias),
             ("Incongruencia: consumo >= (veces la Exhibición)", p.factor_consumo_exhi),
