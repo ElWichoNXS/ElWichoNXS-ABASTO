@@ -11,9 +11,11 @@ import streamlit as st
 
 from motor_minmax import (ColumnasConsumoError, ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
                           leer_bi, leer_consumo_anterior, marcar_en_revision, marcar_revision, procesar, sugerir_subempaque)
+from portal import menu_apps
 from reglas import mostrar_reglas
 
 st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon="📦", layout="wide")
+menu_apps("Min / Max por local")
 
 # ----------------------------------------------------------------------
 # Estilo: rojo y blanco como base. Los colores de texto y fondo heredan del tema
