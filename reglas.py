@@ -80,12 +80,12 @@ Las propuestas para subempacar van aparte, en la hoja *SUGERIR SUBEMPAQUE* (es u
         st.markdown(f"""
 **Objetivo:** si un producto **ya tiene subempaque** y está en **sobrestock**, proponer un subempaque menor para bajar los días de inventario. Aparece en la hoja **SUGERIR SUBEMPAQUE** con `TIPO = Bajar subempaque`.
 
-- **Sobrestock:** el Max actual cubre más de **{p.sobrestock_dias:g} días** de consumo, o no hay consumo y el Max está por encima de la exhibición.
+- **Sobrestock:** el Max actual cubre más de **{p.sobrestock_dias:g} días** de consumo (el límite de días se configura en la app). Un producto **sin consumo no cuenta como sobrestock**: su Min es la exhibición y su Max solo la supera en el incremento mínimo de despacho.
 - **El subempaque sugerido es siempre un múltiplo del empaque (divisor exacto) y menor que el empaque.** Además es menor que el subempaque actual.
   Ejemplo: empaque 12 → opciones 1, 2, 3, 4 y 6. Subempaque 3 → baja a 1.
 - Se elige **el mayor** de esos divisores con el que el Max deja de estar en sobrestock (cambia lo menos posible); si ninguno lo logra, se propone el **menor** (normalmente 1).
 - Solo se sugiere si el Max baja. Se muestra el Max actual, el Max con el sugerido y la reducción en unidades y en valor.
-- Prioridad ALTA: sin consumo, o el Max cubre más del doble del límite de días.
+- Prioridad ALTA: el Max cubre más del doble del límite de días.
 """)
 
     with st.expander("Reglas de sugerencia de SUBEMPAQUE · cargar subempaque", expanded=True):
