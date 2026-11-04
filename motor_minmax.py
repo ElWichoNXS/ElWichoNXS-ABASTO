@@ -865,7 +865,7 @@ def _num(serie: pd.Series) -> pd.Series:
     return serie.map(conv).astype(float)
 
 
-def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
+def _sugerir_cargar_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     """Productos SIN subempaque en un local que conviene subempacar PARA EVITAR SOBRESTOCK.
     Un producto se sugiere solo si cumple TODO lo siguiente:
       1. Es apto para subempaque: el maestro de productos dice 'Apto para PTL' = Si, no es de las familias excluidas
@@ -903,6 +903,7 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
     s = df[cand].copy()
     if s.empty:
         return pd.DataFrame()
+    s["TIPO"] = "Cargar subempaque"
     s["SUB SUGERIDO"] = sub_sug[cand].astype(int)
     s["DIAS VENDER EMPAQUE"] = dias_emp[cand]
     s["DIAS VENDER SUB"] = np.where(R[cand] > 0, s["SUB SUGERIDO"] / R[cand].where(R[cand] > 0), np.nan)
@@ -925,11 +926,92 @@ def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFram
     s["PRIORIDAD"] = np.where(so & pv, "Prioridad ALTA", "Prioridad MEDIA")
     s = s.rename(columns={"SUBEMPAQUE": "SUB ACTUAL", "Max": "MAX ACTUAL"})
     s["PVP"] = pvp[cand].values
-    cols = ["PRIORIDAD", "MOTIVO", "CD", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP",
+    cols = ["TIPO", "PRIORIDAD", "MOTIVO", "CD", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP",
             "EMPAQUE", "SUB ACTUAL", "SUB SUGERIDO", "APTO", "EVIDENCIA", "VALORES EN OTROS LOCALES",
             "CONSUMO DIA", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "Exhi", "Min", "MAX ACTUAL", "MAX CON SUB",
             "REDUCCION MAX", "REDUCCION VALOR"]
     s = s[[c for c in cols if c in s.columns]]
+    return s.sort_values(["PRIORIDAD", "REDUCCION VALOR"], ascending=[True, False]).reset_index(drop=True)
+
+
+def _divisores_menores(emp: int) -> list:
+    """Divisores de `emp` menores que `emp` (los subempaques posibles: múltiplos del empaque, nunca el empaque completo)."""
+    return [d for d in range(1, emp) if emp % d == 0]
+
+
+def _sugerir_bajar_subempaque(df: pd.DataFrame, p: Params) -> pd.DataFrame:
+    """Productos que YA tienen subempaque y están en SOBRESTOCK: propone un subempaque menor para bajar los días de inventario.
+    Sobrestock = el Max actual cubre más de `sobrestock_dias` días de consumo (o hay Max por encima de la exhibición sin consumo).
+    El subempaque sugerido es siempre un divisor del EMPAQUE (empaque / sub entero) y menor que el empaque y que el subempaque actual:
+    el mayor de ellos con el que el Max deja de estar en sobrestock; si ninguno lo logra, el menor posible."""
+    emp = df["EMPAQUE"].astype(float)
+    sub = df["SUBEMPAQUE"].astype(float)
+    R = df["CONSUMO DIA"].astype(float)
+    cob_max = df["Max"] / R.where(R > 0)
+    sin_consumo = R <= 0
+    sobre = (sub > 0) & (sub < emp) & ((cob_max > p.sobrestock_dias) | (sin_consumo & (df["Max"] > df["Exhi"])))
+    filas = []
+    for i in df.index[sobre.values]:
+        e = int(round(emp[i])); s0 = int(round(sub[i]))
+        opciones = [d for d in _divisores_menores(e) if d < s0]
+        if not opciones:
+            continue
+        r_i = float(R[i]); mn = pd.Series([df.at[i, "Min"]], index=[0])
+        elegido, mx_elegido = opciones[0], None
+        for d in sorted(opciones, reverse=True):               # el mayor que ya no deja sobrestock
+            mx, _ = _calc_max(mn, pd.Series([r_i]), pd.Series([float(e)]), pd.Series([float(d)]), p,
+                              frec=pd.Series([df.at[i, "FREC EFECTIVA"]]))
+            if r_i > 0 and mx[0] / r_i <= p.sobrestock_dias:
+                elegido, mx_elegido = d, int(mx[0])
+                break
+        if mx_elegido is None:                                  # ninguno alcanza: el menor
+            mx, _ = _calc_max(mn, pd.Series([r_i]), pd.Series([float(e)]), pd.Series([float(elegido)]), p,
+                              frec=pd.Series([df.at[i, "FREC EFECTIVA"]]))
+            mx_elegido = int(mx[0])
+        if mx_elegido >= df.at[i, "Max"]:
+            continue
+        filas.append((i, elegido, mx_elegido))
+    if not filas:
+        return pd.DataFrame()
+    idx = [f[0] for f in filas]
+    s = df.loc[idx].copy()
+    s["TIPO"] = "Bajar subempaque"
+    s["SUB SUGERIDO"] = [f[1] for f in filas]
+    s["MAX CON SUB"] = [f[2] for f in filas]
+    Rs = R.loc[idx]
+    s["DIAS VENDER EMPAQUE"] = np.where(Rs > 0, s["EMPAQUE"] / Rs.where(Rs > 0), np.nan)
+    s["DIAS VENDER SUB"] = np.where(Rs > 0, s["SUB SUGERIDO"] / Rs.where(Rs > 0), np.nan)
+    s["REDUCCION MAX"] = s["Max"] - s["MAX CON SUB"]
+    pvp = _num(df["PVP"]).loc[idx]
+    s["PVP"] = pvp.values
+    s["REDUCCION VALOR"] = (s["REDUCCION MAX"] * pvp).round(2)
+    s["EVIDENCIA"] = "Ya tiene subempaque " + s["SUBEMPAQUE"].astype(int).astype(str)
+    s["VALORES EN OTROS LOCALES"] = s["_SUB_VALORES"].fillna("") if "_SUB_VALORES" in s else ""
+    cm = cob_max.loc[idx]
+    sc = sin_consumo.loc[idx]
+    s["MOTIVO"] = np.where(sc, "Sobrestock: sin consumo, el subempaque mantiene unidades paradas sobre la exhibición",
+                           "Sobrestock: el Max cubre " + cm.round(0).fillna(0).astype(int).astype(str) + " días (límite "
+                           + f"{p.sobrestock_dias:g})")
+    s["PRIORIDAD"] = np.where(sc | (cm > 2 * p.sobrestock_dias), "Prioridad ALTA", "Prioridad MEDIA")
+    s = s.rename(columns={"SUBEMPAQUE": "SUB ACTUAL", "Max": "MAX ACTUAL"})
+    cols = ["TIPO", "PRIORIDAD", "MOTIVO", "CD", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP",
+            "EMPAQUE", "SUB ACTUAL", "SUB SUGERIDO", "APTO", "EVIDENCIA", "VALORES EN OTROS LOCALES",
+            "CONSUMO DIA", "DIAS VENDER EMPAQUE", "DIAS VENDER SUB", "Exhi", "Min", "MAX ACTUAL", "MAX CON SUB",
+            "REDUCCION MAX", "REDUCCION VALOR"]
+    return s[[c for c in cols if c in s.columns]]
+
+
+def sugerir_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
+    """Sugerencias de cambio de subempaque (propuesta de cambio de maestro). Dos tipos, columna TIPO:
+      - Cargar subempaque: producto sin subempaque que conviene subempacar para evitar sobrestock.
+      - Bajar subempaque: producto con subempaque y sobrestock; se propone un subempaque menor (divisor del empaque)."""
+    p = p or Params()
+    a = _sugerir_cargar_subempaque(df, p)
+    b = _sugerir_bajar_subempaque(df, p)
+    partes = [x for x in (a, b) if len(x)]
+    if not partes:
+        return pd.DataFrame()
+    s = pd.concat(partes, ignore_index=True)
     return s.sort_values(["PRIORIDAD", "REDUCCION VALOR"], ascending=[True, False]).reset_index(drop=True)
 
 
@@ -961,6 +1043,9 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
         ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
                                     f"venderlo o no tuvo consumo) o de PVP alto; {'solo con PVP >= ' + format(p.pvp_alto, 'g') + ' (filtro obligatorio); ' if p.exigir_pvp_alto else 'PVP >= ' + format(p.pvp_alto, 'g') + ' = alto; '}aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
                                     f"y el mismo SKU ya subempacado en al menos {p.min_locales_con_sub} locales. Nunca {', '.join(p.familias_no_subempacar) or '(ninguna familia)'}."),
+        ("Bajar subempaque (TIPO)", f"Productos que ya tienen subempaque y están en sobrestock (el Max cubre más de {p.sobrestock_dias:g} días, o no hay consumo y el Max supera la exhibición). "
+                                    "El subempaque sugerido es siempre un divisor exacto del EMPAQUE, menor que el empaque y menor que el subempaque actual (ej. empaque 12: 1, 2, 3, 4 o 6). "
+                                    "Se elige el mayor con el que el Max sale del sobrestock; si ninguno lo logra, el menor. Solo se sugiere si el Max baja."),
         ("Columnas de control", "% PROM/EXHI = promedio diario / Exhibición; COBERTURA TDF = nivel TDF (Proyectado + Cubrimiento + Exhi + Destacado); % COBERTURA/EMPQ = ese nivel / el umbral (50 % empaque o 100 % subempaque; menos de 100 % pasa a Min/Max); "
                                 "DG MIN / DGMAX = días de consumo que cubren el Min / el Max; CON>EXHI = REVISAR si el consumo diario supera el Min."),
     ]

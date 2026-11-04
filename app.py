@@ -606,13 +606,14 @@ with t_rev:
 
 # ============================ SUBEMPAQUE ============================
 with t_sub:
-    st.markdown('<div class="nota">Productos donde enviar el empaque completo genera sobrestock (o son de PVP alto), son aptos '
-                'y el mismo SKU ya está subempacado en otros locales. Es una propuesta de cambio de maestro: el Max de la hoja '
-                'principal usa el SUBEMPAQUE actual del BI.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="nota"><b>Cargar subempaque:</b> productos donde enviar el empaque completo genera sobrestock (o son de PVP alto), son aptos '
+                'y el mismo SKU ya está subempacado en otros locales.<br><b>Bajar subempaque:</b> productos que ya tienen subempaque y están en sobrestock; '
+                'se propone un subempaque menor, siempre un múltiplo del empaque (divisor exacto) y menor que el empaque. '
+                'Es una propuesta de cambio de maestro: el Max de la hoja principal usa el SUBEMPAQUE actual del BI.</div>', unsafe_allow_html=True)
     if len(sug) == 0:
         st.info("Con los parámetros actuales no hay sugerencias de subempaque.")
     else:
-        kpis([("Sugerencias", n(len(sug)), "Local × estadístico", ROJO),
+        kpis([("Sugerencias", n(len(sug)), f"{n((sug['TIPO'] == 'Cargar subempaque').sum())} cargar · {n((sug['TIPO'] == 'Bajar subempaque').sum())} bajar", ROJO),
               ("Prioridad alta", n((sug["PRIORIDAD"] == "Prioridad ALTA").sum()), "Sobrestock y PVP alto a la vez", C_MINMAX),
               ("SKUs distintos", n(sug["ESTADISTICO"].nunique()), "Códigos a subempacar", C_TDF),
               ("Reducción de Max", n(pd.to_numeric(sug["REDUCCION VALOR"], errors="coerce").fillna(0).sum()),
@@ -625,10 +626,10 @@ with t_sub:
             fs = sug["FAMILIA"].astype(str).value_counts().head(10).rename_axis("Familia").reset_index(name="Sugerencias")
             grafico("Familias con más sugerencias", "Top 10.", barras_h(fs, "Familia", "Sugerencias", alto=max(140, 34 * len(fs) + 20)))
         tabla_filtrada(sug, "sug",
-                       ["PRIORIDAD", "MOTIVO", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP", "EMPAQUE",
+                       ["TIPO", "PRIORIDAD", "MOTIVO", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP", "EMPAQUE",
                         "SUB ACTUAL", "SUB SUGERIDO", "EVIDENCIA", "VALORES EN OTROS LOCALES", "CONSUMO DIA",
                         "DIAS VENDER EMPAQUE", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"],
-                       extra_filtros=[("PRIORIDAD", "Prioridad")])
+                       extra_filtros=[("TIPO", "Tipo"), ("PRIORIDAD", "Prioridad")])
 
 # ============================ RESULTADO ============================
 with t_det:
