@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from motor_minmax import (ColumnasConsumoError, ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
-                          leer_bi, leer_consumo_anterior, marcar_en_revision, marcar_revision, procesar, sugerir_subempaque)
+                          leer_bi, leer_consumo_anterior, VERSION_MOTOR, marcar_en_revision, marcar_revision, procesar, sugerir_subempaque)
 from portal import menu_apps
 from reglas import mostrar_reglas
 
@@ -307,7 +307,7 @@ with st.sidebar:
 # Cálculo (en caché: filtrar tablas no vuelve a procesar el BI)
 # ----------------------------------------------------------------------
 @st.cache_data(show_spinner=False, max_entries=3)
-def calcular(bytes_bi, bytes_ap, params, cols_pronostico, bytes_ant=None, mapa_ant=None):
+def calcular(bytes_bi, bytes_ap, params, cols_pronostico, bytes_ant=None, mapa_ant=None, version=VERSION_MOTOR):
     p = Params(**params)
     bi = leer_bi(io.BytesIO(bytes_bi))
     aptos = leer_aptos(io.BytesIO(bytes_ap)) if bytes_ap else None
@@ -316,6 +316,8 @@ def calcular(bytes_bi, bytes_ap, params, cols_pronostico, bytes_ant=None, mapa_a
     rev = marcar_revision(salida, p)
     salida = marcar_en_revision(salida, rev)
     sug = sugerir_subempaque(salida, p)
+    if len(sug) and "TIPO" not in sug.columns:
+        sug.insert(0, "TIPO", "Cargar subempaque")
     r.pop("filas_con_aviso_revisar", None)
     r["sugerencias_subempaque"] = len(sug)
     r["filas_en_hoja_REVISAR"] = len(rev)
@@ -430,7 +432,7 @@ if bytes_ant and p.usar_consumo_anterior:
         mapa_ant = (m_loc, m_item, m_cons)
 try:
     with st.spinner("Procesando el BI…"):
-        salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, cols_man, bytes_ant, mapa_ant)
+        salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, cols_man, bytes_ant, mapa_ant, VERSION_MOTOR)
 except ColumnasPronosticoError as e:
     st.error(f"{e} Elige abajo las columnas del pronóstico diario.")
     elegidas = st.multiselect(
@@ -442,7 +444,7 @@ except ColumnasPronosticoError as e:
         st.stop()
     try:
         with st.spinner("Procesando el BI…"):
-            salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, tuple(elegidas), bytes_ant, mapa_ant)
+            salida, r, rev, sug, xlsx = calcular(bytes_bi, bytes_ap, params, tuple(elegidas), bytes_ant, mapa_ant, VERSION_MOTOR)
     except ValueError as e2:
         st.error(str(e2))
         st.stop()
@@ -610,6 +612,8 @@ with t_sub:
                 'y el mismo SKU ya está subempacado en otros locales.<br><b>Bajar subempaque:</b> productos que ya tienen subempaque y están en sobrestock; '
                 'se propone un subempaque menor, siempre un múltiplo del empaque (divisor exacto) y menor que el empaque. '
                 'Es una propuesta de cambio de maestro: el Max de la hoja principal usa el SUBEMPAQUE actual del BI.</div>', unsafe_allow_html=True)
+    if len(sug) and "TIPO" not in sug.columns:
+        sug = sug.assign(TIPO="Cargar subempaque")
     if len(sug) == 0:
         st.info("Con los parámetros actuales no hay sugerencias de subempaque.")
     else:

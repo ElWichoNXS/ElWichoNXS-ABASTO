@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+# Cambiar este valor cuando cambie la lógica del motor: invalida los resultados guardados en la caché de la app.
+VERSION_MOTOR = "2026-11-04-c"
+
 # --------------------------------------------------------------------------
 # PARÁMETROS DE NEGOCIO (todos editables desde la interfaz)
 # --------------------------------------------------------------------------
