@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 # Cambiar este valor cuando cambie la lógica del motor: invalida los resultados guardados en la caché de la app.
-VERSION_MOTOR = "2026-11-04-c"
+VERSION_MOTOR = "2026-11-04-d"
 
 # --------------------------------------------------------------------------
 # PARÁMETROS DE NEGOCIO (todos editables desde la interfaz)
@@ -663,11 +663,18 @@ def marcar_revision(df: pd.DataFrame, p: Params | None = None) -> pd.DataFrame:
     prom_pron = pd.to_numeric(df["PROMEDIO PRONOSTICO DIA"], errors="coerce").fillna(0) if "PROMEDIO PRONOSTICO DIA" in df else pd.Series(0.0, index=df.index)
     subestima = (R >= p.consumo_min_subestima) & (R >= p.factor_consumo_vs_pron * prom_pron)
 
+    # Productos que ya tienen subempaque y están en sobrestock: conviene BAJAR el subempaque (divisor del empaque)
+    bajar, _ = _bajar_subempaque_calc(df, p)
+    df["_BAJAR_SUB"] = pd.Series({i: s for i, s, _m in bajar}, dtype="float64").reindex(df.index)
+    df["_BAJAR_MAX"] = pd.Series({i: x for i, _s, x in bajar}, dtype="float64").reindex(df.index)
+    bajar_sub = df["_BAJAR_SUB"].notna()
+
     reglas = [
         ("Prioridad ALTA", "Inventario Físico Negativo", inv_neg),
         ("Prioridad ALTA", "Consumo diario triplica la Exhibición", incongruencia),
         ("Prioridad MEDIA", f"Sobre stock: Cobertura > {p.sobrestock_dias:g} días", sobrestock),
         ("Prioridad MEDIA", "Pronóstico subestima el consumo real", subestima),
+        ("Prioridad MEDIA", f"Bajar subempaque: ya tiene subempaque y el Max cubre > {p.sobrestock_dias:g} días", bajar_sub),
         ("Informativo", f"Sobrestock por cubrir exhibición (consumo <= {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_bajo),
         ("Informativo", f"Sobrestock por cubrir exhibición (consumo > {p.consumo_bajo_exhi:g} u/día)", sobre_exhi_alto),
     ]
@@ -746,6 +753,11 @@ def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
     rev["SUB SUGERIDO"] = sub_sug.where(ok_sub).astype("Float64").round(0)
     rev["MAX CON SUB"] = mx_sub.where(ok_sub).astype("Float64").round(0)
     rev["REDUCCION MAX"] = reduccion.where(ok_sub).astype("Float64").round(0)
+    if "_BAJAR_SUB" in rev:                              # bajar un subempaque que ya existe
+        bj = rev["_BAJAR_SUB"].notna()
+        rev.loc[bj, "SUB SUGERIDO"] = rev.loc[bj, "_BAJAR_SUB"].round(0).astype("Float64")
+        rev.loc[bj, "MAX CON SUB"] = rev.loc[bj, "_BAJAR_MAX"].round(0).astype("Float64")
+        rev.loc[bj, "REDUCCION MAX"] = (rev.loc[bj, "Max"] - rev.loc[bj, "_BAJAR_MAX"]).round(0).astype("Float64")
 
     exhi = pd.to_numeric(rev["Exhi"], errors="coerce").fillna(0)
     inv = pd.to_numeric(rev["INV NETO"], errors="coerce")
@@ -783,6 +795,13 @@ def _sugerir_acciones(rev: pd.DataFrame, p: Params) -> pd.DataFrame:
                 add("Revisar pronóstico (planificación de demanda)",
                     f"Revisar el pronóstico con planificación de demanda: el consumo real ({R[i]:.2f} u/día) es {rel} el promedio pronosticado "
                     f"({pr_:.2f} u/día). El modelo subestima la venta; el Min/Max parte del consumo real (reglas A/B del Min).")
+            elif mo.startswith("Bajar subempaque"):
+                add("Bajar subempaque",
+                    f"BAJAR SUBEMPAQUE de {sub_act[i]:g} a {int(rev.at[i, 'SUB SUGERIDO'])} (divisor del empaque de {emp[i]:g}): el Max baja de "
+                    f"{int(rev.at[i, 'Max'])} a {int(rev.at[i, 'MAX CON SUB'])} (−{int(rev.at[i, 'REDUCCION MAX'])} u; cobertura de "
+                    f"{cmax[i]:.0f} a {(rev.at[i, 'MAX CON SUB'] / R[i]):.0f} días). Cambio de maestro.")
+            elif mo.startswith("Sobre stock") and "_BAJAR_SUB" in rev and pd.notna(rev.at[i, "_BAJAR_SUB"]):
+                continue                                  # ya cubierto por la acción "Bajar subempaque"
             elif mo.startswith("Sobre stock"):
                 e = estado[k]
                 if e in ("si", "posible"):
@@ -942,7 +961,7 @@ def _divisores_menores(emp: int) -> list:
     return [d for d in range(1, emp) if emp % d == 0]
 
 
-def _sugerir_bajar_subempaque(df: pd.DataFrame, p: Params) -> pd.DataFrame:
+def _bajar_subempaque_calc(df: pd.DataFrame, p: Params):
     """Productos que YA tienen subempaque y están en SOBRESTOCK: propone un subempaque menor para bajar los días de inventario.
     Sobrestock = el Max actual cubre más de `sobrestock_dias` días de consumo (parámetro de la app). Sin consumo NO se
     considera sobrestock: el Min es la exhibición y el Max solo la supera en el incremento mínimo de despacho.
@@ -975,6 +994,13 @@ def _sugerir_bajar_subempaque(df: pd.DataFrame, p: Params) -> pd.DataFrame:
         if mx_elegido >= df.at[i, "Max"]:
             continue
         filas.append((i, elegido, mx_elegido))
+    return filas, cob_max
+
+
+def _sugerir_bajar_subempaque(df: pd.DataFrame, p: Params) -> pd.DataFrame:
+    """Hoja SUGERIR SUBEMPAQUE (TIPO = Bajar subempaque). Ver `_bajar_subempaque_calc` para la regla."""
+    R = df["CONSUMO DIA"].astype(float)
+    filas, cob_max = _bajar_subempaque_calc(df, p)
     if not filas:
         return pd.DataFrame()
     idx = [f[0] for f in filas]
@@ -1377,7 +1403,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
 
         if len(rev) and "ACCIÓN PRINCIPAL" in rev:
             titulo("6b. Acción sugerida para los casos de REVISAR")
-            orden_a = ["Corregir inventario", "Notificar al área comercial", "Revisar pronóstico (planificación de demanda)", "Subempacar", "Evaluar subempaque",
+            orden_a = ["Corregir inventario", "Notificar al área comercial", "Revisar pronóstico (planificación de demanda)", "Subempacar", "Bajar subempaque", "Evaluar subempaque",
                        "Sin solución operativa (mapeado)", "Informativo"]
             filas = []
             for k in orden_a:

@@ -86,6 +86,7 @@ Las propuestas para subempacar van aparte, en la hoja *SUGERIR SUBEMPAQUE* (es u
 - Se elige **el mayor** de esos divisores con el que el Max deja de estar en sobrestock (cambia lo menos posible); si ninguno lo logra, se propone el **menor** (normalmente 1).
 - Solo se sugiere si el Max baja. Se muestra el Max actual, el Max con el sugerido y la reducción en unidades y en valor.
 - Prioridad ALTA: el Max cubre más del doble del límite de días.
+- También aparecen en la hoja **REVISAR** (acción principal *Bajar subempaque*, prioridad media), con el subempaque actual, el sugerido, el Max con el sugerido y la reducción.
 """)
 
     with st.expander("Reglas de sugerencia de SUBEMPAQUE · cargar subempaque", expanded=True):
