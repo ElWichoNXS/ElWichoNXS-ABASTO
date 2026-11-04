@@ -201,15 +201,130 @@ def _cols_fecha(df: pd.DataFrame) -> list:
     return [c for c in df.columns if _es_fecha(c)]
 
 
+def _norm_col(txt) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(txt)).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def _leer_bytes(archivo) -> bytes:
+    if isinstance(archivo, (bytes, bytearray)):
+        return bytes(archivo)
+    if hasattr(archivo, "getvalue"):
+        return archivo.getvalue()
+    if hasattr(archivo, "read"):
+        return archivo.read()
+    with open(archivo, "rb") as f:
+        return f.read()
+
+
+def _hojas_crudas(archivo):
+    """Devuelve [(nombre_hoja, DataFrame sin encabezado)] según el formato real del archivo
+    (xlsx/xlsm, xls, xlsb, ods o texto csv/tsv/txt). El formato se detecta por el contenido, no por la extensión."""
+    import io
+    datos = _leer_bytes(archivo)
+    cab = datos[:8]
+    bio = io.BytesIO(datos)
+    if cab[:4] == b"PK\x03\x04":                                  # zip: xlsx, xlsm, xlsb u ods
+        import zipfile
+        nombres = zipfile.ZipFile(io.BytesIO(datos)).namelist()
+        if any(n.endswith("workbook.bin") for n in nombres):
+            motor = "pyxlsb"
+        elif "content.xml" in nombres and "mimetype" in nombres:
+            motor = "odf"
+        else:
+            motor = "openpyxl"
+        hojas = pd.read_excel(bio, sheet_name=None, header=None, engine=motor)
+        return list(hojas.items())
+    if cab[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":            # xls antiguo
+        hojas = pd.read_excel(bio, sheet_name=None, header=None, engine="xlrd")
+        return list(hojas.items())
+    for enc in ("utf-8-sig", "utf-16", "latin-1"):                  # texto delimitado
+        try:
+            txt = datos.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    primera = "\n".join(txt.splitlines()[:5])
+    sep = max([";", "\t", ",", "|"], key=primera.count)
+    df = pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str, keep_default_na=False, engine="python")
+    return [("csv", df.replace("", np.nan))]
+
+
+def _num_texto(df: pd.DataFrame) -> pd.DataFrame:
+    """Convierte a número las columnas de texto que en realidad son números (acepta coma decimal y miles con punto)."""
+    for c in df.columns:
+        s = df[c]
+        if pd.api.types.is_numeric_dtype(s) or pd.api.types.is_datetime64_any_dtype(s) or pd.api.types.is_bool_dtype(s):
+            continue
+        t = s.dropna().astype(str).str.strip()
+        if t.empty or not t.str.fullmatch(r"-?\d{1,3}(\.\d{3})*(,\d+)?|-?\d+([.,]\d+)?").mean() >= 0.98:
+            continue
+        x = s.astype(str).str.strip()
+        con_coma = x.str.contains(",", regex=False)
+        x = x.where(~con_coma, x.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
+        df[c] = pd.to_numeric(x.where(s.notna()), errors="coerce")
+    return df
+
+
+def leer_tabla(archivo, claves: list, max_filas_encabezado: int = 30) -> pd.DataFrame:
+    """Lee una tabla de cualquier formato soportado. Busca la hoja y la fila de encabezado que contienen todas las
+    columnas `claves` (cada clave es una lista de nombres posibles, ya normalizados; basta con que coincida uno)."""
+    hojas = _hojas_crudas(archivo)
+    for nombre, crudo in hojas:
+        for i in range(min(max_filas_encabezado, len(crudo))):
+            celdas = [_norm_col(v) for v in crudo.iloc[i].tolist()]
+            if all(any(c in alt or any(c.startswith(a) for a in alt) for c in celdas) for alt in claves):
+                df = crudo.iloc[i + 1:].copy()
+                df.columns = [v.strip() if isinstance(v, str) else v for v in crudo.iloc[i].tolist()]
+                df = df.dropna(how="all").reset_index(drop=True)
+                df = df.loc[:, [not (isinstance(c, float) and np.isnan(c)) for c in df.columns]]
+                return _num_texto(df.infer_objects())
+    raise ValueError("No se encontró una hoja con las columnas esperadas (" +
+                     "; ".join("/".join(a) for a in claves) + "). Hojas revisadas: " + ", ".join(str(n) for n, _ in hojas))
+
+
+# Nombres alternativos que usan otros formatos del BI -> nombre que usa el programa
+_ALIAS_BI = {
+    "Local": ["local", "# local", "cod local", "codigo local", "nro local", "sucursal"],
+    "Dias SS": ["dias ss", "dias de ss", "dias de seguridad", "dias seguridad"],
+    "Exhi": ["exhi", "uni exhibicion", "unidades exhibicion", "unid exhibicion", "exhibicion"],
+    "DS SUC": ["dias stock suc"],
+    "DS MAX": ["dias stock max"],
+    "CD": ["bodega"],
+    "DESIGNACION": ["designacion", "nombre local"],
+    "Método": ["metodo"],
+    "Físico": ["fisico"],
+}
+
+
+def normalizar_bi(df: pd.DataFrame) -> pd.DataFrame:
+    """Renombra las columnas de otros formatos del BI a los nombres que usa el programa (solo si no existen ya)."""
+    df = df.copy()
+    df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
+    existentes = set(df.columns)
+    ren = {}
+    for destino, alts in _ALIAS_BI.items():
+        if destino in existentes:
+            continue
+        for c in df.columns:
+            if isinstance(c, str) and _norm_col(c) in alts and c not in ren:
+                ren[c] = destino
+                break
+    return df.rename(columns=ren)
+
+
 def leer_bi(archivo) -> pd.DataFrame:
-    """Lee el Excel crudo del BI (primera hoja)."""
-    return pd.read_excel(archivo)
+    """Lee el BI en cualquier formato (xlsx, xlsm, xls, xlsb, ods, csv/txt). Localiza la hoja y el encabezado solos y
+    reconoce los nombres de columna de las distintas versiones del BI (p. ej. '# Local', 'Uni Exhibición', 'Días de SS.')."""
+    df = leer_tabla(archivo, [["estadistico"], ["local", "cod local", "codigo local", "nro local", "sucursal"]])
+    return normalizar_bi(df)
 
 
 def leer_aptos(archivo) -> pd.DataFrame:
     """Maestro de productos: columnas 'Estadístico' y 'Apto para PTL' (Si / No).
     'Apto para PTL' se usa como aptitud para subempaque."""
-    a = pd.read_excel(archivo)
+    a = leer_tabla(archivo, [["estad"], ["apto"]])
     a.columns = [str(c).strip() for c in a.columns]
     col_e = next(c for c in a.columns if c.lower().startswith("estad"))
     col_a = next(c for c in a.columns if c.lower().startswith("apto"))
@@ -238,7 +353,7 @@ def _norm(txt) -> str:
 def leer_consumo_anterior(archivo, col_local=None, col_item=None, col_consumo=None) -> pd.DataFrame:
     """Consumo del mes anterior por local e ítem. Devuelve Local, ESTADISTICO, CONSUMO_ANT (total del mes, sumado si hay varias filas).
     Reconoce columnas como Local/Sucursal, Estadístico/Item/SKU y Consumo/Venta/Unidades; si no las reconoce, pide elegirlas."""
-    a = pd.read_excel(archivo)
+    a = leer_tabla(archivo, [["local", "cod local", "codigo local", "sucursal", "tienda", "nro local"], ["estadistico", "item", "sku", "codigo item", "codigo", "articulo"]])
     a.columns = [str(c).strip() for c in a.columns]
 
     def buscar(candidatos, elegido):
@@ -365,7 +480,7 @@ def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
     #   Cubrimiento = suma del pronostico de los (FREC + Dias SS) dias siguientes al dia 0
     Vn = np.nan_to_num(V, nan=0.0)
     hor = np.clip(np.round(df["FREC EFECTIVA"].values + df["Dias SS"].values).astype(int), 0, 60)   # dias de cubrimiento = FREC + Dias SS
-    ext = np.tile(prom_v[:, None], (1, int(hor.max()) + 1))      # mas alla del pronostico del BI se usa el promedio diario
+    ext = np.tile(prom_v[:, None], (1, max(int(hor.max()) + 1, n_dias)))      # mas alla del pronostico del BI se usa el promedio diario
     ext[:, :n_dias] = Vn
     cum = np.cumsum(ext, axis=1)
     idx = np.arange(len(df))

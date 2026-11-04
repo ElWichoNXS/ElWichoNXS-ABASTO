@@ -44,3 +44,10 @@ Replica el método manual del analista: `python rag_manual.py RAG.xlsx salida.xl
 - Divisor del consumo = días de venta completos del mes (el día de hoy no cuenta: 14-oct → 13); se toma de la FECHA del archivo.
 - Hojas 1–6: `CONS DIA`, `MINIMO = EXHIBICION`, `MAXIMO = ROUND(MINIMO + EMPAQUE/2)`, `DG MAX`, `DIF`, `% Empaque`, `SE CONFIGURA` (CORREGIR si ROQ < EMPAQUE/2). Fórmulas de Excel.
 - Hoja 7: se configuran solo los estadísticos que se repiten 5 o más veces (tabla dinámica); el resto queda pendiente.
+
+## Formatos de archivo que acepta la carga
+
+El BI, el maestro de aptos y el consumo del mes anterior se pueden subir en Excel (xlsx, xlsm, xls, xlsb, ods) o en texto (csv, txt, tsv). El formato se detecta por el contenido del archivo, no por la extensión. El programa:
+- busca solo la hoja y la fila de encabezado (acepta filas de título arriba y varias hojas);
+- reconoce los nombres de columna de otras versiones del BI (`# Local` → `Local`, `Uni Exhibición` → `Exhi`, `Días de SS.` → `Dias SS`, `BODEGA` → `CD`, `Físico`, etc.);
+- convierte números escritos con coma decimal o separador de miles, y lee csv con `;`, `,`, tabulador o `|`, en UTF-8 o Latin-1.

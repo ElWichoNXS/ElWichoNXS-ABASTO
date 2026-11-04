@@ -398,11 +398,12 @@ if st.session_state["ver_reglas"]:
 # ---------------- Carga ----------------
 seccion("Carga de archivos", "Sube el BI y, opcionalmente, el maestro de productos aptos")
 c1, c2, c3 = st.columns(3)
-f_bi = c1.file_uploader("1) Excel del BI (obligatorio)", type=["xlsx"], key="f_bi",
-                        help="Excel crudo que se descarga del BI, con el pronóstico de 12 días por local y estadístico.")
-f_ap = c2.file_uploader("2) Maestro de productos aptos", type=["xlsx"], key="f_ap",
+f_bi = c1.file_uploader("1) BI (obligatorio)", type=["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "txt"], key="f_bi",
+                        help="Archivo del BI con el pronóstico de 12 días por local y estadístico. Acepta Excel (xlsx, xlsm, xls, xlsb, ods) y CSV/TXT; "
+                             "encuentra solo la hoja y el encabezado, y reconoce los nombres de columna de las distintas versiones del BI.")
+f_ap = c2.file_uploader("2) Maestro de productos aptos", type=["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "txt"], key="f_ap",
                         help="Excel con las columnas 'Estadístico' y 'Apto para PTL' (Si / No). Opcional: sin él se asume que todos son aptos.")
-f_ant = c3.file_uploader("3) Consumo del mes anterior (opcional)", type=["xlsx"], key="f_ant",
+f_ant = c3.file_uploader("3) Consumo del mes anterior (opcional)", type=["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "txt"], key="f_ant",
                          help="Columnas: Local, Estadístico y Consumo (total del mes). Se usa como base del consumo diario cuando los días "
                               "transcurridos del mes son pocos. Se activa con la casilla del grupo 1 de parámetros.")
 
