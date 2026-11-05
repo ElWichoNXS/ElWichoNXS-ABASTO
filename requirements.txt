@@ -2,3 +2,4 @@
 xlrd
 pyxlsb
 odfpy
+tzdata

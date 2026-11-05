@@ -3,6 +3,8 @@ app.py  -  Interfaz Streamlit para calcular Min/Max (Pronóstico cero)
 Ejecutar:  streamlit run app.py
 """
 import io
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dataclasses import asdict
 
 import altair as alt
@@ -477,7 +479,7 @@ d1, d2 = st.columns([3, 1.4])
 d1.markdown(f'<div class="nota"><b>{n(n_mm)}</b> de <b>{n(total_bi)}</b> filas del BI pasan de TDF a Min/Max '
             f'({n_mm / max(total_bi, 1):.1%}). Revisa las pestañas y descarga el Excel con las 4 hojas.</div>',
             unsafe_allow_html=True)
-d2.download_button("⬇️ Descargar Excel procesado", xlsx, file_name="Pronostico_cero_procesado.xlsx",
+d2.download_button("⬇️ Descargar Excel procesado", xlsx, file_name=f"Pronostico_cero_procesado_{datetime.now(ZoneInfo('America/Guayaquil')):%d-%m-%Y}.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
 t_res, t_cla, t_rev, t_sub, t_det = st.tabs(["Resumen", "Clasificación", "Revisar", "Subempaque", "Resultado"])
