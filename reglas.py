@@ -101,10 +101,15 @@ Las propuestas para subempacar van aparte, en la hoja *SUGERIR SUBEMPAQUE* (es u
    - Tiene EMPAQUE ≥ **{p.min_empaque_sugerir_sub}** unidades (con empaques pequeños subempacar no aporta).
 2. **El mismo SKU ya está subempacado** en al menos **{p.min_locales_con_sub}** local(es) del BI (o está en la lista manual);
    el valor más común en esos locales es el subempaque sugerido.
+   **Excepción para locales sin consumo:** como sin consumo no se pueden calcular los días de inventario (DG MAX), basta con que el SKU esté
+   subempacado en **1 local** si cumple el resto (PVP mínimo, apto, familia y empaque). Esas filas quedan marcadas *«validar con el maestro»* en `EVIDENCIA`.
 3. **Hay riesgo de sobrestock**, es decir, cumple **al menos una**:
    - **Empaque completo = sobrestock:** el local tarda más de **{p.sub_dias_venta_empaque:g} días** en vender un empaque
      (`EMPAQUE ÷ CONSUMO DIA`), o el producto **no tuvo consumo** en el mes (un empaque completo quedaría parado).
    - **PVP alto:** PVP ≥ **{p.pvp_alto:g}**. {"Es un filtro **obligatorio**: un producto con PVP menor a ese valor nunca se sugiere, aunque tenga sobrestock. Los de PVP alto se revisan aunque el empaque se venda rápido." if p.exigir_pvp_alto else "Es un criterio adicional: se revisa aunque el empaque se venda rápido, para no enviar stock de más con un valor alto."}
+
+**Dónde encontrar cada caso:** la hoja principal (*Pronóstico cero*) y *REVISAR* tienen la columna **EN SUGERIR SUBEMPAQUE**
+(`Cargar subempaque`, `Bajar subempaque` o `No`), y *SUGERIR SUBEMPAQUE* tiene **EN REVISAR** (`Sí`, `Informativo` o `No`). El cruce se hace por CD + Local + ESTADISTICO.
 
 **Prioridad:** ALTA si cumple las dos (sobrestock y PVP alto); MEDIA si cumple solo una. La hoja ordena por el valor que se evitaría
 inmovilizar y muestra, para cada caso, los días que tardaría en venderse el empaque contra el subempaque, y cuánto bajaría el Max.

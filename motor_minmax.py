@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 # Cambiar este valor cuando cambie la lógica del motor: invalida los resultados guardados en la caché de la app.
-VERSION_MOTOR = "2026-11-04-d"
+VERSION_MOTOR = "2026-11-09-a"
 
 # --------------------------------------------------------------------------
 # PARÁMETROS DE NEGOCIO (todos editables desde la interfaz)
@@ -903,7 +903,11 @@ def _sugerir_cargar_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.
     n_sub = df["_N_LOC_SUB"].fillna(0)
     evid_bi = n_sub >= p.min_locales_con_sub
     extra = df["ESTADISTICO"].isin(p.skus_sub_extra)
-    sub_sug = pd.Series(np.where(evid_bi, df["_SUB_REF"], np.where(extra, 1, np.nan)), index=df.index)
+    # Sin consumo no se pueden medir los días de inventario (DG MAX), pero un empaque completo igual queda parado.
+    # Si el resto de condiciones se cumple (PVP mínimo, apto, familia, empaque), basta con que el SKU esté
+    # subempacado en al menos 1 local para tener un valor de referencia; esas filas se marcan "validar".
+    evid_debil = (R <= 0) & (n_sub >= 1) & ~evid_bi
+    sub_sug = pd.Series(np.where(evid_bi | evid_debil, df["_SUB_REF"], np.where(extra, 1, np.nan)), index=df.index)
     sub_sug = np.minimum(sub_sug, emp)
 
     prohibido = (df["FAMILIA"].astype(str).str.strip().str.upper().isin([f.upper() for f in p.familias_no_subempacar])
@@ -920,7 +924,7 @@ def _sugerir_cargar_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.
     # PVP mínimo: filtro obligatorio (un producto barato no se sugiere aunque tenga sobrestock)
     filtro_pvp = c_pvp if p.exigir_pvp_alto else pd.Series(True, index=df.index)
 
-    cand = ((df["SUBEMPAQUE"] == 0) & (emp >= p.min_empaque_sugerir_sub) & (evid_bi | extra) &
+    cand = ((df["SUBEMPAQUE"] == 0) & (emp >= p.min_empaque_sugerir_sub) & (evid_bi | evid_debil | extra) &
             (sub_sug > 0) & (sub_sug < inc_act) & ~prohibido & ~no_apto & filtro_pvp & (c_sobre | c_pvp))
     s = df[cand].copy()
     if s.empty:
@@ -933,18 +937,20 @@ def _sugerir_cargar_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.
     s["MAX CON SUB"] = mx_sub
     s["REDUCCION MAX"] = s["Max"] - s["MAX CON SUB"]
     s["REDUCCION VALOR"] = (s["REDUCCION MAX"] * pvp[cand]).round(2)
-    s["EVIDENCIA"] = np.where(s["_N_LOC_SUB"].fillna(0) >= p.min_locales_con_sub,
-                              "Subempacado en " + s["_N_LOC_SUB"].fillna(0).astype(int).astype(str)
-                              + " de " + s["_N_LOC_SKU"].fillna(0).astype(int).astype(str) + " locales",
-                              "SKU de la lista manual")
+    txt_sub = ("Subempacado en " + s["_N_LOC_SUB"].fillna(0).astype(int).astype(str)
+               + " de " + s["_N_LOC_SKU"].fillna(0).astype(int).astype(str) + " locales")
+    debil = evid_debil[cand].values
+    s["EVIDENCIA"] = np.where(debil, "Sin consumo; " + txt_sub.str.lower() + " (validar con el maestro)",
+                              np.where(s["_N_LOC_SUB"].fillna(0) >= p.min_locales_con_sub, txt_sub, "SKU de la lista manual"))
     s["VALORES EN OTROS LOCALES"] = s["_SUB_VALORES"].fillna("")
     so, sc, pv = c_sobre[cand], sin_consumo[cand], c_pvp[cand]
     s["MOTIVO"] = [
         " + ".join(x for x in (
             ("Sobrestock: sin consumo, un empaque completo queda parado" if c else
              f"Sobrestock: un empaque tarda más de {p.sub_dias_venta_empaque:g} días en venderse") if o else "",
-            "PVP alto" if v else "") if x)
-        for o, c, v in zip(so, sc, pv)]
+            "PVP alto" if v else "",
+            "Validar: SKU subempacado en pocos locales" if d else "") if x)
+        for o, c, v, d in zip(so, sc, pv, debil)]
     s["PRIORIDAD"] = np.where(so & pv, "Prioridad ALTA", "Prioridad MEDIA")
     s = s.rename(columns={"SUBEMPAQUE": "SUB ACTUAL", "Max": "MAX ACTUAL"})
     s["PVP"] = pvp[cand].values
@@ -954,6 +960,47 @@ def _sugerir_cargar_subempaque(df: pd.DataFrame, p: Params | None = None) -> pd.
             "REDUCCION MAX", "REDUCCION VALOR"]
     s = s[[c for c in cols if c in s.columns]]
     return s.sort_values(["PRIORIDAD", "REDUCCION VALOR"], ascending=[True, False]).reset_index(drop=True)
+
+
+_LLAVES_HOJA = ("CD", "Local", "ESTADISTICO")
+
+
+def _mapa_hoja(df: pd.DataFrame, otra: pd.DataFrame, col: str) -> pd.Series:
+    """Para cada fila de `df`, el valor de `col` de la fila equivalente (CD, Local, ESTADISTICO) en `otra`; NaN si no está."""
+    llaves = [c for c in _LLAVES_HOJA if c in df.columns and c in otra.columns]
+    if not llaves or otra is None or len(otra) == 0 or col not in otra.columns:
+        return pd.Series(np.nan, index=df.index, dtype=object)
+    mapa = otra[llaves + [col]].drop_duplicates(llaves)
+    return pd.Series(df[llaves].merge(mapa, on=llaves, how="left")[col].values, index=df.index, dtype=object)
+
+
+def _mover_despues(df: pd.DataFrame, col: str, tras: str) -> pd.DataFrame:
+    if col in df.columns and tras in df.columns:
+        cols = [c for c in df.columns if c != col]
+        cols.insert(cols.index(tras) + 1, col)
+        return df[cols]
+    return df
+
+
+def marcar_en_sugerir(df: pd.DataFrame, sug: pd.DataFrame | None) -> pd.DataFrame:
+    """Agrega EN SUGERIR SUBEMPAQUE a la hoja principal o a REVISAR: 'Cargar subempaque' / 'Bajar subempaque' si la fila
+    (CD, Local, ESTADISTICO) aparece en la hoja SUGERIR SUBEMPAQUE, 'No' si no aparece."""
+    df = df.drop(columns=["EN SUGERIR SUBEMPAQUE"], errors="ignore").copy()
+    if sug is None or len(sug) == 0 or "TIPO" not in sug.columns:
+        df["EN SUGERIR SUBEMPAQUE"] = "No"
+    else:
+        df["EN SUGERIR SUBEMPAQUE"] = _mapa_hoja(df, sug, "TIPO").fillna("No").values
+    return _mover_despues(df, "EN SUGERIR SUBEMPAQUE", "ACCIÓN PRINCIPAL")
+
+
+def marcar_sug_en_revisar(sug: pd.DataFrame, rev: pd.DataFrame) -> pd.DataFrame:
+    """Agrega EN REVISAR a la hoja SUGERIR SUBEMPAQUE: 'Sí' (prioridad alta/media), 'Informativo' o 'No' según la fila esté en REVISAR."""
+    if sug is None or len(sug) == 0:
+        return sug
+    sug = sug.drop(columns=["EN REVISAR"], errors="ignore").copy()
+    pr = _mapa_hoja(sug, rev, "PRIORIDAD")
+    sug["EN REVISAR"] = np.where(pr.isna().values, "No", np.where(pr.eq("Informativo").values, "Informativo", "Sí"))
+    return _mover_despues(sug, "EN REVISAR", "MOTIVO")
 
 
 def _divisores_menores(emp: int) -> list:
@@ -1070,7 +1117,9 @@ def _leyenda(p: "Params") -> list[tuple[str, str]]:
                          "En 'Pronóstico cero' esas filas se marcan (EN REVISAR) para filtrarlas."),
         ("Hoja SUGERIR SUBEMPAQUE", f"Productos sin subempaque donde enviar el empaque completo genera sobrestock (el local tarda más de {p.sub_dias_venta_empaque:g} días en "
                                     f"venderlo o no tuvo consumo) o de PVP alto; {'solo con PVP >= ' + format(p.pvp_alto, 'g') + ' (filtro obligatorio); ' if p.exigir_pvp_alto else 'PVP >= ' + format(p.pvp_alto, 'g') + ' = alto; '}aptos según el maestro ('Apto para PTL' = Si); EMPAQUE >= {p.min_empaque_sugerir_sub}; "
-                                    f"y el mismo SKU ya subempacado en al menos {p.min_locales_con_sub} locales. Nunca {', '.join(p.familias_no_subempacar) or '(ninguna familia)'}."),
+                                    f"y el mismo SKU ya subempacado en al menos {p.min_locales_con_sub} locales (si el local no tiene consumo basta 1 local y queda 'validar con el maestro'). "
+                                    f"Nunca {', '.join(p.familias_no_subempacar) or '(ninguna familia)'}. Las hojas 'Pronóstico cero' y REVISAR tienen la columna EN SUGERIR SUBEMPAQUE "
+                                    "(Cargar / Bajar / No) y esta hoja tiene EN REVISAR (Sí / Informativo / No) para ubicar cada caso entre hojas."),
         ("Bajar subempaque (TIPO)", f"Productos que ya tienen subempaque y están en sobrestock (el Max cubre más de {p.sobrestock_dias:g} días de consumo; sin consumo no cuenta como sobrestock). "
                                     "El subempaque sugerido es siempre un divisor exacto del EMPAQUE, menor que el empaque y menor que el subempaque actual (ej. empaque 12: 1, 2, 3, 4 o 6). "
                                     "Se elige el mayor con el que el Max sale del sobrestock; si ninguno lo logra, el menor. Solo se sugiere si el Max baja."),
@@ -1090,6 +1139,9 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
     p = p or Params()
     sug = sug if sug is not None else pd.DataFrame()
     df = marcar_en_revision(df, rev)
+    rev = marcar_en_sugerir(rev, sug)               # REVISAR indica qué casos están en SUGERIR SUBEMPAQUE
+    df = marcar_en_sugerir(df, sug)                 # y la hoja principal también
+    sug = marcar_sug_en_revisar(sug, rev)           # SUGERIR SUBEMPAQUE indica cuáles están en REVISAR
     privadas = [c for c in df.columns if isinstance(c, str) and c.startswith("_")]
     res = df.drop(columns=[c for c in privadas if c in df.columns])
     res.columns = [c.strftime("%Y-%m-%d") if isinstance(c, (dt.datetime, pd.Timestamp)) else c
@@ -1097,7 +1149,7 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
     prio_rev = df["_PRIORIDAD_REVISAR"].values if "_PRIORIDAD_REVISAR" in df.columns else [""] * len(df)
     # Orden: ... Min, Max, EN REVISAR, Exhi, DIF ...  (Exhi se mueve justo antes de DIF)
     if "Max" in res.columns:
-        pegadas = [c for c in ("EN REVISAR", "Exhi") if c in res.columns]
+        pegadas = [c for c in ("EN REVISAR", "EN SUGERIR SUBEMPAQUE", "Exhi") if c in res.columns]
         resto = [c for c in res.columns if c not in pegadas]
         pos = resto.index("Max") + 1
         res = res[resto[:pos] + pegadas + resto[pos:]]
@@ -1186,6 +1238,22 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
                 if col == "EN REVISAR":
                     ws.column_dimensions[get_column_letter(i)].width = 12
                     ws.cell(row=1, column=i).fill = PatternFill("solid", fgColor="ED7D31")
+                    if nombre == "SUGERIR SUBEMPAQUE":
+                        for r, v in enumerate(d[col].tolist(), 2):
+                            if v in ("Sí", "Informativo"):
+                                c = ws.cell(row=r, column=i)
+                                c.fill = PatternFill("solid", fgColor="FFE699" if v == "Sí" else "DDEBF7")
+                                c.font = Font(bold=True, name="Arial")
+                                c.alignment = Alignment(horizontal="center")
+                if col == "EN SUGERIR SUBEMPAQUE":
+                    ws.column_dimensions[get_column_letter(i)].width = 22
+                    ws.cell(row=1, column=i).fill = PatternFill("solid", fgColor="2F75B5")
+                    for r, v in enumerate(d[col].tolist(), 2):
+                        if v != "No":
+                            c = ws.cell(row=r, column=i)
+                            c.fill = PatternFill("solid", fgColor="BDD7EE")
+                            c.font = Font(bold=True, name="Arial", color="1F4E79")
+                            c.alignment = Alignment(horizontal="center")
                 if str(col) in ("CON>EXHI", "DG EXHI = DG MIN") and n:
                     rango = f"{get_column_letter(i)}2:{get_column_letter(i)}{n + 1}"
                     ws.conditional_formatting.add(rango, CellIsRule(
@@ -1428,6 +1496,14 @@ def exportar_excel(df: pd.DataFrame, rev: pd.DataFrame, resumen: dict, destino,
             if "REDUCCION MAX" in sug:
                 filas.append(("Unidades de Max que se evitarían", int(pd.to_numeric(sug["REDUCCION MAX"], errors="coerce").fillna(0).sum()), None, None))
             tabla(["Prioridad", "Filas", "Estadísticos distintos", "% del total"], filas)
+            if "TIPO" in sug and "EN REVISAR" in sug:
+                filas = []
+                for k in ["Cargar subempaque", "Bajar subempaque"]:
+                    s = sug[sug["TIPO"] == k]
+                    if len(s):
+                        filas.append((k, len(s), int((s["EN REVISAR"] != "No").sum()), int((s["EN REVISAR"] == "No").sum())))
+                tabla(["Tipo (columna EN SUGERIR SUBEMPAQUE de las hojas principal y REVISAR)", "Filas en la hoja",
+                       "También están en REVISAR", "Solo en esta hoja"], filas, fmts=["#,##0", "#,##0", "#,##0"])
         else:
             tabla(["Prioridad", "Filas"], [("Sin sugerencias con los parámetros actuales", 0)])
 

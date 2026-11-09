@@ -12,7 +12,8 @@ import pandas as pd
 import streamlit as st
 
 from motor_minmax import (ColumnasConsumoError, ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
-                          leer_bi, leer_consumo_anterior, VERSION_MOTOR, marcar_en_revision, marcar_revision, procesar, sugerir_subempaque)
+                          leer_bi, leer_consumo_anterior, VERSION_MOTOR, marcar_en_revision, marcar_en_sugerir, marcar_revision, marcar_sug_en_revisar, procesar,
+                          sugerir_subempaque)
 from portal import menu_apps
 from reglas import mostrar_reglas
 
@@ -320,6 +321,9 @@ def calcular(bytes_bi, bytes_ap, params, cols_pronostico, bytes_ant=None, mapa_a
     sug = sugerir_subempaque(salida, p)
     if len(sug) and "TIPO" not in sug.columns:
         sug.insert(0, "TIPO", "Cargar subempaque")
+    salida = marcar_en_sugerir(salida, sug)          # qué filas de la hoja principal están en SUGERIR SUBEMPAQUE
+    rev = marcar_en_sugerir(rev, sug)                # y cuáles de REVISAR
+    sug = marcar_sug_en_revisar(sug, rev)            # y cuáles de SUGERIR SUBEMPAQUE están en REVISAR
     r.pop("filas_con_aviso_revisar", None)
     r["sugerencias_subempaque"] = len(sug)
     r["filas_en_hoja_REVISAR"] = len(rev)
@@ -603,10 +607,10 @@ with t_rev:
                 st.info("Ningún caso de REVISAR reduce el Max con subempaque.")
     seccion("Detalle de los casos", "Filtra por local, familia o prioridad")
     tabla_filtrada(rev, "rev",
-                   ["PRIORIDAD", "ACCIÓN PRINCIPAL", "SUGERENCIA A REALIZAR", "Local", "DESIGNACION", "ESTADISTICO",
+                   ["PRIORIDAD", "ACCIÓN PRINCIPAL", "EN SUGERIR SUBEMPAQUE", "SUGERENCIA A REALIZAR", "Local", "DESIGNACION", "ESTADISTICO",
                     "DESCRIPCION", "FAMILIA", "CONSUMO DIA", "Exhi", "Min", "Max", "COBERTURA MAX (DIAS)",
                     "SUB SUGERIDO", "REDUCCION MAX", "MOTIVOS DE REVISIÓN"],
-                   extra_filtros=[("PRIORIDAD", "Prioridad")])
+                   extra_filtros=[("PRIORIDAD", "Prioridad"), ("EN SUGERIR SUBEMPAQUE", "En sugerir subempaque")])
 
 # ============================ SUBEMPAQUE ============================
 with t_sub:
@@ -632,16 +636,16 @@ with t_sub:
             fs = sug["FAMILIA"].astype(str).value_counts().head(10).rename_axis("Familia").reset_index(name="Sugerencias")
             grafico("Familias con más sugerencias", "Top 10.", barras_h(fs, "Familia", "Sugerencias", alto=max(140, 34 * len(fs) + 20)))
         tabla_filtrada(sug, "sug",
-                       ["TIPO", "PRIORIDAD", "MOTIVO", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP", "EMPAQUE",
+                       ["TIPO", "PRIORIDAD", "MOTIVO", "EN REVISAR", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "PVP", "EMPAQUE",
                         "SUB ACTUAL", "SUB SUGERIDO", "EVIDENCIA", "VALORES EN OTROS LOCALES", "CONSUMO DIA",
                         "DIAS VENDER EMPAQUE", "MAX ACTUAL", "MAX CON SUB", "REDUCCION MAX"],
-                       extra_filtros=[("TIPO", "Tipo"), ("PRIORIDAD", "Prioridad")])
+                       extra_filtros=[("TIPO", "Tipo"), ("PRIORIDAD", "Prioridad"), ("EN REVISAR", "En revisar")])
 
 # ============================ RESULTADO ============================
 with t_det:
     seccion("Filas que pasan a Min/Max", "Es la hoja «Pronóstico cero» del Excel. Aquí se muestran las columnas esenciales.")
     tabla_filtrada(salida, "res",
                    ["Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "Exhi", "Empq_final", "SUBEMPAQUE",
-                    "CONSUMO DIA", "Min", "Max", "MOTIVO MIN/MAX", "EN REVISAR"],
-                   extra_filtros=[("EN REVISAR", "En revisar"), ("MOTIVO MIN/MAX", "Motivo")],
+                    "CONSUMO DIA", "Min", "Max", "MOTIVO MIN/MAX", "EN REVISAR", "EN SUGERIR SUBEMPAQUE"],
+                   extra_filtros=[("EN REVISAR", "En revisar"), ("EN SUGERIR SUBEMPAQUE", "En sugerir subempaque"), ("MOTIVO MIN/MAX", "Motivo")],
                    cfg={"Min": st.column_config.NumberColumn(format="%d"), "Max": st.column_config.NumberColumn(format="%d")})
