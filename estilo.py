@@ -9,7 +9,7 @@ import streamlit as st
 
 # Súbela al cambiar estilo.py o portal.py: las apps comparan este número y recargan los módulos
 # (Streamlit Cloud a veces conserva en memoria la versión anterior tras actualizar el repositorio).
-VERSION = "2026-11-11.2"
+VERSION = "2026-11-11.3"
 
 # ---- Marca
 ROJO, ROJO_OSC = "#E30613", "#A30410"

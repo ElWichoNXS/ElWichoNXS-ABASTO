@@ -9,7 +9,7 @@ APPS = [
     # (nombre, ícono Material de Streamlit, dirección en Streamlit Cloud)
     ("Verificación de traspasos", ":material/fact_check:", "https://verificaciondesolicitudesagotados-kkf5f8ke8v4c9ovjzrv6nk.streamlit.app/"),
     ("Min / Max por local", ":material/stacked_bar_chart:", "https://elwichonxs-abasto-kbt59qziqyexuqjhmhyan6.streamlit.app/"),
-    ("Distribución de estadísticos", ":material/local_shipping:", ""),  # pendiente: pegar aquí la dirección cuando se publique
+    ("Distribución de estadísticos", ":material/local_shipping:", "https://distribucionestadisticoslocales-cd-sluewfh4jjgt3vi5s6bnh3.streamlit.app/"),
 ]
 
 
