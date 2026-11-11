@@ -11,109 +11,29 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from motor_minmax import (ColumnasConsumoError, ColumnasPronosticoError, Params, exportar_excel, leer_aptos,
+import estilo
+import portal
+
+VERSION_ESTILO = "2026-11-11.2"
+if getattr(estilo, "VERSION", None) != VERSION_ESTILO:   # módulos viejos en memoria tras actualizar el repositorio
+    import importlib
+    for _m in (estilo, portal):
+        importlib.reload(_m)
+
+from estilo import (C_ALT, C_BAJO, C_EXT, C_OK, ROJO, aplicar_estilo, chips, encabezado, grafico, kpis,  # noqa: E402
+                    n, nota, nota_html, seccion, vacio)
+from motor_minmax import (ColumnasConsumoError, ColumnasPronosticoError, Params, exportar_excel, leer_aptos,  # noqa: E402
                           leer_bi, leer_consumo_anterior, VERSION_MOTOR, marcar_en_revision, marcar_en_sugerir, marcar_revision, marcar_sug_en_revisar, procesar,
                           sugerir_subempaque)
-from portal import menu_apps
-from reglas import mostrar_reglas
+from portal import menu_apps  # noqa: E402
+from reglas import mostrar_reglas  # noqa: E402
 
-st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon=":material/stacked_bar_chart:", layout="wide")
 menu_apps("Min / Max por local")
+aplicar_estilo()   # mismo lenguaje visual que Distribución de estadísticos y Verificación (estilo.py)
 
-# ----------------------------------------------------------------------
-# Estilo: rojo y blanco como base. Los colores de texto y fondo heredan del tema
-# (claro/oscuro); solo el rojo y los acentos son fijos.
-# ----------------------------------------------------------------------
-ROJO, ROJO_OSC = "#E30613", "#A30410"
-C_MINMAX, C_TDF, C_AMBAR, C_VERDE = "#E5414B", "#4B86E6", "#D39A2E", "#1FA391"   # paleta validada
-BORDE = "color-mix(in srgb, currentColor 16%, transparent)"
-TARJETA = "color-mix(in srgb, currentColor 4%, transparent)"
-
-st.markdown(f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-html, body, .stApp, h1, h2, h3, h4, p, label, li, button, input, textarea {{ font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; }}
-.block-container {{ padding-top: 1rem; max-width: 1480px; }}
-header[data-testid="stHeader"] {{ background: transparent; }}
-
-/* Encabezado */
-.hero {{ background: linear-gradient(115deg, {ROJO} 0%, {ROJO_OSC} 100%); border-radius: 16px;
-    padding: 22px 30px; display: flex; justify-content: space-between; align-items: center; gap: 24px;
-    box-shadow: 0 8px 24px rgba(227,6,19,.25); flex-wrap: wrap; }}
-.hero h1 {{ color:#fff !important; margin:0; font-size:1.75rem; font-weight:800; letter-spacing:-.4px; padding:0; }}
-.hero p {{ color:#ffe3e5 !important; margin:4px 0 0 0; font-size:.95rem; }}
-.pasos {{ display:flex; gap:10px; flex-wrap:wrap; }}
-.paso {{ display:flex; align-items:center; gap:8px; background:rgba(255,255,255,.14); color:#fff;
-    padding:7px 14px 7px 8px; border-radius:30px; font-size:.82rem; font-weight:600; }}
-.paso b {{ width:22px; height:22px; border-radius:50%; background:rgba(255,255,255,.28); display:flex;
-    align-items:center; justify-content:center; font-size:.78rem; }}
-.paso.ok {{ background:#fff; color:{ROJO}; }}
-.paso.ok b {{ background:{ROJO}; color:#fff; }}
-
-/* Tarjetas de indicadores */
-.kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; margin:6px 0 4px 0; }}
-.kpi {{ background:{TARJETA}; border:1px solid {BORDE}; border-radius:14px; padding:16px 18px; position:relative; overflow:hidden; }}
-.kpi::before {{ content:""; position:absolute; left:0; top:0; bottom:0; width:5px; background:var(--ac, {ROJO}); }}
-.kpi .l {{ font-size:.8rem; font-weight:600; opacity:.7; }}
-.kpi .v {{ font-size:1.9rem; font-weight:800; letter-spacing:-.6px; line-height:1.15; margin-top:2px; }}
-.kpi .s {{ font-size:.78rem; opacity:.62; margin-top:2px; }}
-
-/* Títulos */
-.seccion {{ margin: 22px 0 8px 0; font-size:1.12rem; font-weight:800; letter-spacing:-.2px; }}
-.seccion small {{ display:block; font-weight:400; opacity:.62; font-size:.84rem; letter-spacing:0; margin-top:1px; }}
-.nota {{ border-left:4px solid {ROJO}; background:{TARJETA}; padding:10px 14px; border-radius:0 10px 10px 0; font-size:.88rem; }}
-
-/* Barra lateral */
-section[data-testid="stSidebar"] {{ border-right:1px solid {BORDE}; }}
-section[data-testid="stSidebar"] h2 {{ color:{ROJO} !important; font-size:1.15rem; font-weight:800; }}
-section[data-testid="stSidebar"] div[data-testid="stExpander"] {{ border-radius:10px; margin-bottom:6px; }}
-
-/* Controles */
-div[data-testid="stFileUploader"] section {{ background:rgba(227,6,19,.06); border:2px dashed {ROJO}; border-radius:14px; min-height:92px; align-items:center; }}
-div[data-testid="stFileUploader"] label {{ min-height:1.6rem; }}
-div[data-testid="stFileUploader"] label p {{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-button[data-testid="stBaseButton-primary"], div[data-testid="stDownloadButton"] button {{
-    background:{ROJO}; color:#fff; border:none; border-radius:10px; font-weight:700; box-shadow:0 3px 10px rgba(227,6,19,.3); }}
-button[data-testid="stBaseButton-primary"]:hover, div[data-testid="stDownloadButton"] button:hover {{ background:{ROJO_OSC}; color:#fff; border:none; }}
-button[data-testid="stBaseButton-primary"] p, div[data-testid="stDownloadButton"] button p {{ color:#fff; }}
-button[data-testid="stBaseButton-secondary"] {{ border:1.5px solid {ROJO}; border-radius:10px; font-weight:600; }}
-button[data-testid="stBaseButton-secondary"]:hover {{ background:rgba(227,6,19,.10); border-color:{ROJO}; color:{ROJO}; }}
-button[data-baseweb="tab"] {{ font-weight:700; }}
-button[data-baseweb="tab"][aria-selected="true"] {{ color:{ROJO}; }}
-div[data-baseweb="tab-highlight"] {{ background-color:{ROJO}; height:3px; }}
-div[data-testid="stDataFrame"] {{ border:1px solid {BORDE}; border-radius:12px; overflow:hidden; }}
-div[data-testid="stExpander"] {{ border:1px solid {BORDE}; border-radius:12px; background:{TARJETA}; }}
-div[data-testid="stExpander"] summary p {{ font-weight:700; }}
-div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius:14px; }}
-hr {{ border-color:{BORDE}; }}
-</style>
-""", unsafe_allow_html=True)
-
-
-# ----------------------------------------------------------------------
-# Utilidades de presentación
-# ----------------------------------------------------------------------
-def seccion(titulo, sub=""):
-    st.markdown(f'<div class="seccion">{titulo}<small>{sub}</small></div>', unsafe_allow_html=True)
-
-
-def kpis(items):
-    """items: (etiqueta, valor, subtítulo, color)"""
-    html = "".join(
-        f'<div class="kpi" style="--ac:{c}"><div class="l">{l}</div><div class="v">{v}</div><div class="s">{s}</div></div>'
-        for l, v, s, c in items)
-    st.markdown(f'<div class="kpis">{html}</div>', unsafe_allow_html=True)
-
-
-def n(x):
-    return f"{int(x):,}".replace(",", ".")
-
-
-def grafico(titulo, sub, chart):
-    with st.container(border=True):
-        st.markdown(f"**{titulo}**" + (f"  \n<span style='opacity:.62;font-size:.82rem'>{sub}</span>" if sub else ""),
-                    unsafe_allow_html=True)
-        st.altair_chart(chart, width="stretch")
+# Colores de la app con la paleta compartida de estilo.py
+C_MINMAX, C_TDF, C_AMBAR, C_VERDE = C_EXT, C_ALT, C_BAJO, C_OK
 
 
 def barras_h(df, cat, val, color=None, escala=None, alto=None, titulo_val="Filas", orden="-x"):
@@ -165,16 +85,17 @@ def num(label, clave, mn, mx, help, step=None, fmt=None):
     kw = dict(min_value=mn, max_value=mx, key=f"p_{clave}", help=help)
     if step is not None:
         kw["step"] = step
-    if fmt:
-        kw["format"] = fmt
+    kw["format"] = fmt or ("%g" if isinstance(d, float) else None)   # "15" en vez de "15.00"
+    if kw["format"] is None:
+        kw.pop("format")
     return st.number_input(label, **kw) if isinstance(d, (int, float)) else None
 
 
 # ---------------- Barra lateral ----------------
 with st.sidebar:
     st.header("Parámetros")
-    st.caption("Cada grupo se abre y se cierra por separado. El signo ❓ explica cada parámetro.")
-    st.button("↺ Restablecer valores iniciales", on_click=_restablecer, width="stretch")
+    st.caption("Cada grupo se abre y se cierra por separado. El ícono de ayuda junto a cada parámetro explica qué hace.")
+    st.button("Restablecer valores iniciales", icon=":material/restart_alt:", on_click=_restablecer, width="stretch")
 
     p = Params()
     with st.expander("1 · Consumo", expanded=True):
@@ -376,27 +297,16 @@ def tabla_filtrada(df, clave, cols_defecto, extra_filtros=None, cfg=None, max_fi
 # Encabezado + pasos
 # ----------------------------------------------------------------------
 f_bi_estado = st.session_state.get("f_bi") is not None
-paso_cls = lambda ok: "paso ok" if ok else "paso"
-st.markdown(f"""
-<div class="hero">
-  <div>
-    <h1>Min / Max por local · Pronóstico cero</h1>
-    <p>Decide qué productos pasan de TDF a Min/Max y calcula su mínimo y máximo.</p>
-  </div>
-  <div class="pasos">
-    <div class="{paso_cls(f_bi_estado)}"><b>1</b>Cargar el BI</div>
-    <div class="{paso_cls(f_bi_estado)}"><b>2</b>Ajustar parámetros</div>
-    <div class="{paso_cls(f_bi_estado)}"><b>3</b>Revisar y descargar</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+encabezado("Min / Max por local · Pronóstico cero",
+           "Decide qué productos pasan de TDF a Min/Max y calcula su mínimo y máximo.",
+           [("Cargar el BI", f_bi_estado), ("Ajustar parámetros", f_bi_estado), ("Revisar y descargar", f_bi_estado)])
 
 # Botón de reglas (ocultas por defecto; cada bloque se minimiza por separado)
 st.session_state.setdefault("ver_reglas", False)
 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 b1, b2 = st.columns([1.3, 2.7])
-if b1.button("Ocultar las reglas de cálculo" if st.session_state["ver_reglas"] else "📘 Ver las reglas de cálculo",
-             key="btn_reglas", type="secondary", width="stretch"):
+if b1.button("Ocultar las reglas de cálculo" if st.session_state["ver_reglas"] else "Ver las reglas de cálculo",
+             icon=":material/menu_book:", key="btn_reglas", type="secondary", width="stretch"):
     st.session_state["ver_reglas"] = not st.session_state["ver_reglas"]
     st.rerun()
 if st.session_state["ver_reglas"]:
@@ -416,8 +326,11 @@ f_ant = c3.file_uploader("3) Consumo del mes anterior (opcional)", type=["xlsx",
                               "transcurridos del mes son pocos. Se activa con la casilla del grupo 1 de parámetros.")
 
 if not f_bi:
-    st.markdown('<div class="nota">Sube el Excel del BI para ver el resumen, los casos a revisar y descargar el archivo procesado. '
-                'Los parámetros de la izquierda ya traen sus valores iniciales.</div>', unsafe_allow_html=True)
+    vacio("Carga el BI para ver el resultado",
+          "Sube el Excel del BI para ver el resumen, los casos a revisar y descargar el archivo procesado. "
+          "Los parámetros de la izquierda ya traen sus valores iniciales.",
+          [("BI (obligatorio)", False), ("Maestro de aptos (opcional)", f_ap is not None),
+           ("Consumo mes anterior (opcional)", f_ant is not None)])
     st.stop()
 
 bytes_bi = f_bi.getvalue()
@@ -478,12 +391,24 @@ n_rev_si = int((salida["EN REVISAR"] == "Sí").sum())
 n_info = int((salida["EN REVISAR"] == "Informativo").sum())
 dias_p = r["dias_de_pronostico"]
 
+# Estado de cada archivo cargado (debajo de su cargador)
+with c1:
+    chips([f"<b>{n(total_bi)}</b> filas del BI", f"<b>{salida['Local'].nunique()}</b> locales en Min/Max",
+           f"<b>{dias_p}</b> días de pronóstico"])
+if f_ap:
+    with c2:
+        chips(["Maestro cargado"])
+if f_ant:
+    with c3:
+        chips([f"<b>{n(r['filas_consumo_mes_anterior'])}</b> filas con consumo anterior"]
+              if r.get("filas_consumo_mes_anterior") is not None else ["Cargado"] + ["sin usar (casilla desmarcada)"])
+
 # Descarga destacada
-d1, d2 = st.columns([3, 1.4])
-d1.markdown(f'<div class="nota"><b>{n(n_mm)}</b> de <b>{n(total_bi)}</b> filas del BI pasan de TDF a Min/Max '
-            f'({n_mm / max(total_bi, 1):.1%}). Revisa las pestañas y descarga el Excel con las 4 hojas.</div>',
+d1, d2 = st.columns([3, 1.4], vertical_alignment="center")
+d1.markdown(nota_html(f'<b>{n(n_mm)}</b> de <b>{n(total_bi)}</b> filas del BI pasan de TDF a Min/Max '
+                      f'({n_mm / max(total_bi, 1):.1%}). Revisa las pestañas y descarga el Excel con las 4 hojas.', "ok"),
             unsafe_allow_html=True)
-d2.download_button("⬇️ Descargar Excel procesado", xlsx, file_name=f"Pronostico_cero_procesado_{datetime.now(ZoneInfo('America/Guayaquil')):%d-%m-%Y}.xlsx",
+d2.download_button("Descargar Excel procesado", xlsx, icon=":material/download:", file_name=f"Pronostico_cero_procesado_{datetime.now(ZoneInfo('America/Guayaquil')):%d-%m-%Y}.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
 t_res, t_cla, t_rev, t_sub, t_det = st.tabs(["Resumen", "Clasificación", "Revisar", "Subempaque", "Resultado"])
@@ -614,10 +539,10 @@ with t_rev:
 
 # ============================ SUBEMPAQUE ============================
 with t_sub:
-    st.markdown('<div class="nota"><b>Cargar subempaque:</b> productos donde enviar el empaque completo genera sobrestock (o son de PVP alto), son aptos '
-                'y el mismo SKU ya está subempacado en otros locales.<br><b>Bajar subempaque:</b> productos que ya tienen subempaque y están en sobrestock; '
-                'se propone un subempaque menor, siempre un múltiplo del empaque (divisor exacto) y menor que el empaque. '
-                'Es una propuesta de cambio de maestro: el Max de la hoja principal usa el SUBEMPAQUE actual del BI.</div>', unsafe_allow_html=True)
+    nota('<b>Cargar subempaque:</b> productos donde enviar el empaque completo genera sobrestock (o son de PVP alto), son aptos '
+         'y el mismo SKU ya está subempacado en otros locales.<br><b>Bajar subempaque:</b> productos que ya tienen subempaque y están en sobrestock; '
+         'se propone un subempaque menor, siempre un múltiplo del empaque (divisor exacto) y menor que el empaque. '
+         'Es una propuesta de cambio de maestro: el Max de la hoja principal usa el SUBEMPAQUE actual del BI.')
     if len(sug) and "TIPO" not in sug.columns:
         sug = sug.assign(TIPO="Cargar subempaque")
     if len(sug) == 0:

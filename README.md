@@ -3,7 +3,7 @@
 Automatiza la decisión de qué productos del BI (todos descargados en método **TDF**, abastecimiento por forecast)
 conviene pasar a método **Min/Max**, y calcula su **Min** y **Max** (siempre enteros).
 
-Archivos: `motor_minmax.py` (lógica), `app.py` (interfaz Streamlit), `requirements.txt`, `.streamlit/config.toml` (tema rojo/blanco, modo claro y oscuro).
+Archivos: `motor_minmax.py` (lógica), `app.py` (interfaz Streamlit), `requirements.txt`, `estilo.py` (estilo visual compartido con las apps de Distribución y Verificación), `portal.py` (menú «Mis apps»), `.streamlit/config.toml` (tema claro fijo).
 
     pip install -r requirements.txt
     streamlit run app.py
@@ -35,7 +35,7 @@ La columna `MOTIVO MIN/MAX` indica por qué pasó cada fila.
 - **Resumen:** tarjetas e indicadores del cambio de método, clasificación por motivo, reglas del Min y el Max, unidades, casos de REVISAR y sus acciones, subempaque, dónde se concentran los cambios, diagnóstico, parámetros usados y reglas aplicadas.
 
 ## Parámetros
-Cada parámetro de la barra lateral tiene un signo ❓ con su explicación, y al final de la página hay una sección con las reglas (se actualiza con los valores configurados). Modo claro/oscuro: menú ⋮ → Settings → Theme.
+Cada parámetro de la barra lateral tiene un ícono de ayuda con su explicación, y el botón «Ver las reglas de cálculo» muestra las reglas (se actualizan con los valores configurados).
 
 ## Solución del RAG de abastecimiento (`rag_manual.py`)
 
