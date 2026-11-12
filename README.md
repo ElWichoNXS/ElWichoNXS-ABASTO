@@ -53,3 +53,18 @@ El BI, el maestro de aptos y el consumo del mes anterior se pueden subir en Exce
 - convierte números escritos con coma decimal o separador de miles, y lee csv con `;`, `,`, tabulador o `|`, en UTF-8 o Latin-1.
 
 **Mapeo entre hojas:** la hoja principal y REVISAR tienen la columna `EN SUGERIR SUBEMPAQUE` (Cargar subempaque / Bajar subempaque / No) y SUGERIR SUBEMPAQUE tiene `EN REVISAR` (Sí / Informativo / No), cruzando por CD + Local + ESTADISTICO. La hoja Resumen (sección 7) cuenta cuántas sugerencias también están en REVISAR.
+
+## Módulo Min/Max → TDF
+
+Segundo módulo de la app (selector «TDF → Min/Max · Min/Max → TDF» arriba de la página; código en `app_tdf.py` y `motor_tdf.py`). Toma el BI con los estadísticos que hoy están en método **M** y decide cuáles pueden volver a **TDF**. Solo se evalúan las filas con `Método = M`.
+
+Un estadístico pasa a TDF si cumple las tres condiciones:
+1. **Pronóstico normal:** ni cero, ni sin pronóstico, ni lineal (misma clasificación que el módulo TDF → Min/Max: `clasificar_pronostico` en `motor_minmax.py`).
+2. **Nivel TDF suficiente:** Proyectado + Cubrimiento + Exhibición + Destacado ≥ 50 % del EMPAQUE (sin subempaque) o ≥ 100 % del SUBEMPAQUE (con subempaque).
+3. **Exclusión que permite despachar del CD:** LI, vacía, IP y SP pasan; IT y ST se quedan en M (se puede cambiar en el panel de parámetros).
+
+Si pasa a TDF pero no tuvo venta en el mes (con pronóstico normal), cambia igual y queda con una **ALERTA**.
+
+El Excel trae: **Resumen**, **PASAN A TDF** (con motivo y alerta), **CARGA TDF** (Local, estadístico, método actual M y nuevo TDF, alerta; la columna ALERTA se puede borrar antes de cargar) y **SE QUEDAN EN M** (con el motivo: exclusión, pronóstico cero, sin pronóstico, lineal o nivel TDF bajo).
+
+Pruebas con datos inventados: `python tests/test_motor_tdf.py`.

@@ -32,6 +32,19 @@ st.set_page_config(page_title="Min/Max · Pronóstico cero", page_icon=":materia
 menu_apps("Min / Max por local")
 aplicar_estilo()   # mismo lenguaje visual que Distribución de estadísticos y Verificación (estilo.py)
 
+# Selector de módulo: TDF → Min/Max (esta pantalla) o Min/Max → TDF (app_tdf.py, motor_tdf.py)
+MODULOS = ["TDF → Min/Max", "Min/Max → TDF"]
+modulo = st.segmented_control("Módulo", MODULOS, default=MODULOS[0], key="modulo", label_visibility="collapsed") or MODULOS[0]
+if modulo == MODULOS[1]:
+    import importlib
+    import app_tdf
+    import motor_tdf
+    if getattr(app_tdf, "VERSION_APP_TDF", None) != "2026-11-12-a" or getattr(motor_tdf, "VERSION_TDF", None) != "2026-11-12-a":
+        importlib.reload(motor_tdf)       # módulos viejos en memoria tras actualizar el repositorio
+        importlib.reload(app_tdf)
+    app_tdf.main()
+    st.stop()
+
 # Colores de la app con la paleta compartida de estilo.py
 C_MINMAX, C_TDF, C_AMBAR, C_VERDE = C_EXT, C_ALT, C_BAJO, C_OK
 

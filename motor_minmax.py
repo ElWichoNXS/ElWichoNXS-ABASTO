@@ -389,6 +389,80 @@ def leer_consumo_anterior(archivo, col_local=None, col_item=None, col_consumo=No
 # --------------------------------------------------------------------------
 # PROCESO PRINCIPAL
 # --------------------------------------------------------------------------
+def clasificar_pronostico(df_bi: pd.DataFrame, p: "Params | None" = None, cols_pronostico: list | None = None):
+    """Clasifica cada fila del BI por su pronóstico, con la MISMA regla que usa procesar() para decidir TDF -> Min/Max:
+        Cero / Sin pronóstico  -> la suma de los 12 días es 0 (o no hay pronóstico)
+        Lineal                 -> pronóstico repetido (ver `_es_lineal`; si el modelo copió la semana se juzga solo la semana 1)
+        Normal                 -> ni cero ni lineal
+    y calcula el nivel que TDF busca tener (Proyectado + Cubrimiento + Exhibición + Destacado) contra su umbral
+    (50 % del EMPAQUE sin subempaque, 100 % del SUBEMPAQUE con subempaque).
+    Devuelve (df, info): df = copia del BI con las columnas CLASE PRONOSTICO, COBERTURA TDF, UMBRAL TDF, % COBERTURA/UMBRAL,
+    NIVEL BAJO, PROMEDIO PRONOSTICO DIA, CONSUMO DIA, FREC EFECTIVA; info = días y columnas de pronóstico usadas.
+    Una fila pasa a (o se queda en) Min/Max si CLASE != Normal o NIVEL BAJO; con CLASE = Normal y NIVEL BAJO = False le corresponde TDF."""
+    p = p or Params()
+    df = df_bi.copy()
+    df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
+    requeridas = ["Local", "ESTADISTICO", "CONSUMOS ACU", "Exhi", "EMPAQUE", "SUBEMPAQUE", "Dias SS", "FREC ENTRE DESP"]
+    faltan = [c for c in requeridas if c not in df.columns]
+    if faltan:
+        raise ValueError(f"Faltan columnas en el archivo del BI: {faltan}")
+    if cols_pronostico:
+        fechas = [c for c in df.columns if c in set(cols_pronostico)]
+        if len(fechas) != len(cols_pronostico):
+            raise ValueError("Alguna de las columnas de pronóstico elegidas no existe en el archivo.")
+    else:
+        fechas = _cols_fecha(df)
+        if len(fechas) < MIN_DIAS_PRON:
+            raise ColumnasPronosticoError(
+                f"Se necesitan al menos {MIN_DIAS_PRON} columnas de pronóstico diario (fechas) y se reconocieron {len(fechas)}.",
+                fechas, list(df.columns))
+    fechas = fechas[:MAX_DIAS_PRON]
+    n_dias = len(fechas)
+    V = df[fechas].apply(pd.to_numeric, errors="coerce").values
+    for c in ("Exhi", "EMPAQUE", "SUBEMPAQUE", "CONSUMOS ACU", "FREC ENTRE DESP", "Dias SS"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df["FREC EFECTIVA"] = frec_efectiva(df, p)
+
+    suma = np.round(np.nansum(V, axis=1), 4)
+    igual = (V[:, :, None] == V[:, None, :]).sum(axis=2)
+    unicos = (igual == 1).sum(axis=1)
+    V7 = V[:, :7]
+    igual7 = (V7[:, :, None] == V7[:, None, :]).sum(axis=2)
+    n_unicos7 = (igual7 == 1).sum(axis=1)
+    n_repet7 = np.round(np.where(igual7 >= 2, 1.0 / np.maximum(igual7, 1), 0).sum(axis=1)).astype(int)
+    if n_dias > 7:
+        copia = np.all(np.isclose(V[:, 7:n_dias], V[:, :n_dias - 7]), axis=1)
+    else:
+        copia = np.zeros(len(V), dtype=bool)
+    lineal = np.where(copia, _es_lineal(n_unicos7, n_repet7), unicos <= p.umbral_unicos)
+    sin_pron = np.all(np.isnan(V), axis=1)
+
+    exhi = df["Exhi"].values
+    prom = suma / n_dias
+    Vn = np.nan_to_num(V, nan=0.0)
+    hor = np.clip(np.round(df["FREC EFECTIVA"].values + df["Dias SS"].values).astype(int), 0, 60)
+    ext = np.tile(prom[:, None], (1, max(int(hor.max()) + 1 if len(hor) else 1, n_dias)))
+    ext[:, :n_dias] = Vn
+    cum = np.cumsum(ext, axis=1)
+    idx = np.arange(len(df))
+    cubrimiento = cum[idx, hor] - cum[:, 0]
+    dest = pd.to_numeric(df["DESTACADOS"], errors="coerce").fillna(0).values if "DESTACADOS" in df.columns else np.zeros(len(df))
+    cob = ext[:, 0] + cubrimiento + exhi + dest
+    con_sub = df["SUBEMPAQUE"].values > 0
+    umbral = np.where(con_sub, p.pct_subempaque_cobertura * df["SUBEMPAQUE"].values, p.pct_empaque_cobertura * df["EMPAQUE"].values)
+
+    df["CLASE PRONOSTICO"] = np.where(sin_pron, "Sin pronóstico", np.where(suma == 0, "Cero", np.where(lineal, "Lineal", "Normal")))
+    df["PROMEDIO PRONOSTICO DIA"] = np.round(prom, 2)
+    df["COBERTURA TDF"] = np.round(cob, 2)
+    df["UMBRAL TDF"] = np.round(umbral, 2)
+    df["% COBERTURA/UMBRAL"] = cob / np.where(umbral > 0, umbral, np.nan)
+    df["NIVEL BAJO"] = cob < umbral
+    df["_CON_SUB"] = con_sub
+    df["CONSUMO DIA"] = df["CONSUMOS ACU"].astype(float) / p.dias_transcurridos
+    info = {"dias_de_pronostico": n_dias, "columnas_pronostico_usadas": [str(c) for c in fechas]}
+    return df, info
+
+
 def procesar(df_bi: pd.DataFrame, aptos: pd.DataFrame | None = None,
              p: Params | None = None, cols_pronostico: list | None = None,
              consumo_ant: pd.DataFrame | None = None):
