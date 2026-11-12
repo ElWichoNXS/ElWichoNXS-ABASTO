@@ -16,9 +16,10 @@ DSS SUGERIDO (para los que pasan a TDF; en TDF es obligatorio cargarlo):
   - Lo que TDF envía = Proyectado + Cubrimiento + Exhibición (+ Destacado), con
         Proyectado  = pronóstico del día 0 (día de despacho)
         Cubrimiento = pronóstico de los (FREC + DSS) días siguientes al día 0 (más allá del BI, el promedio diario)
-  - Si Proyectado + Cubrimiento no alcanza la venta real hasta el próximo despacho (CONSUMO DIA x FREC),
-    se suben los DSS hasta que alcance, con un tope configurable.
-Alertas (solo informan): sin venta en el mes, venta real muy superior al pronóstico, y venta del ciclo que no se cubre ni con el tope.
+  - Al llegar el próximo despacho debe quedar el 100 % de la exhibición (+ destacado), descontando lo que ya hay en el local:
+        Pedido TDF = max(0, ROQ - INV NETO);  stock al próximo despacho = INV NETO + Pedido - CONSUMO DIA x FREC.
+    Si no alcanza, se suben los DSS hasta que alcance, con un tope configurable. Si el INV NETO ya alcanza, el DSS queda en la frecuencia.
+Alertas (solo informan): sin venta en el mes, venta real muy superior al pronóstico, y exhibición incompleta al próximo despacho ni con el tope.
 """
 from __future__ import annotations
 
@@ -30,14 +31,14 @@ import pandas as pd
 
 from motor_minmax import Params, clasificar_pronostico
 
-VERSION_TDF = "2026-11-12-c"
+VERSION_TDF = "2026-11-12-d"
 
 EXCLUSIONES_BLOQUEAN = ("IT", "ST")           # sin transferencia del CD al local: se quedan en M
 ETQ_EXCLUSION = {"LI": "LI / vacía", "IT": "IT · bloqueo total", "IP": "IP · bloqueo parcial",
                  "ST": "ST · suspensión total", "SP": "SP · suspensión parcial"}
 MOT_FREC = "Frecuencia de despacho"
 MOT_CONSUMO = "Frecuencia + consumo alto"
-MOT_TOPE = "Consumo alto: no cubre ni con el DSS máximo"
+MOT_TOPE = "Consumo alto: no completa la exhibición ni con el DSS máximo"
 
 
 @dataclass
@@ -53,23 +54,32 @@ def _codigo_exclusion(serie: pd.Series) -> pd.Series:
     return c.where(c != "", "LI").where(~c.isin(["NAN", "NONE"]), "LI")
 
 
-def sugerir_dss(frec, cum, venta_dia, tope: int):
+def sugerir_dss(frec, cum, venta_dia, tope: int, inv=None, exhibicion=None):
     """Días de stock de seguridad sugeridos por fila.
     frec: frecuencia efectiva (días); cum[:, h] = pronóstico acumulado de los días 0..h (= Proyectado + Cubrimiento con horizonte h);
-    venta_dia: CONSUMO DIA real. Devuelve (dss, motivo, envio_cubre, no_cubre):
-      dss         = max(frecuencia, menor DSS con el que Proyectado + Cubrimiento alcanza CONSUMO DIA x frecuencia), con tope max(tope, frecuencia)
+    venta_dia: CONSUMO DIA real; inv: INV NETO del local; exhibicion: Exhi + Destacado (lo que debe quedar en percha).
+
+    Regla: al llegar el próximo despacho debe quedar el 100 % de la exhibición.
+      Pedido TDF  = max(0, ROQ - INV NETO),   ROQ = Proyectado + Cubrimiento + Exhibición (+ Destacado)
+      Stock al próximo despacho = INV NETO + Pedido - venta del ciclo = max(INV NETO, ROQ) - CONSUMO DIA x frecuencia
+    Se cumple si Proyectado + Cubrimiento >= venta del ciclo, o si el INV NETO que ya tiene el local alcanza solo
+    (INV NETO - venta del ciclo >= exhibición). Devuelve (dss, motivo, envio_cubre, no_cubre):
+      dss         = max(frecuencia, menor DSS con el que se cumple), con tope max(tope, frecuencia)
       envio_cubre = Proyectado + Cubrimiento con ese DSS
-      no_cubre    = True si ni con el tope alcanza la venta del ciclo"""
+      no_cubre    = True si ni con el tope queda la exhibición completa al próximo despacho"""
     frec = np.asarray(frec).astype(int)
     n = len(frec)
     idx = np.arange(n)
     venta_ciclo = np.asarray(venta_dia, dtype=float) * frec
+    inv = np.zeros(n) if inv is None else np.nan_to_num(np.asarray(inv, dtype=float))
+    exhibicion = np.zeros(n) if exhibicion is None else np.nan_to_num(np.asarray(exhibicion, dtype=float))
+    cubre_inv = inv - venta_ciclo >= exhibicion - 1e-9     # el inventario actual ya sostiene la exhibición todo el ciclo
     base = np.clip(frec, 0, None)
     cap = np.maximum(int(tope), base)
     necesario = cap + 1                                    # cap + 1 = no alcanza ni con el tope
     ultimo = cum.shape[1] - 1
     for d in range(int(cap.max()) if n else 0, -1, -1):    # de mayor a menor: al final queda el menor DSS que cubre
-        ok = (cum[idx, np.minimum(frec + d, ultimo)] >= venta_ciclo - 1e-9) & (d <= cap)
+        ok = ((cum[idx, np.minimum(frec + d, ultimo)] >= venta_ciclo - 1e-9) | cubre_inv) & (d <= cap)
         necesario = np.where(ok, d, necesario)
     no_cubre = necesario > cap
     dss = np.minimum(np.maximum(base, necesario), cap)
@@ -108,9 +118,10 @@ def procesar_m_a_tdf(df_bi: pd.DataFrame, p: Params | None = None, pt: ParamsTDF
     prom = df["PROMEDIO PRONOSTICO DIA"].astype(float).values
     cum = info["_cum"]
     idx = np.arange(len(df))
-    dss, mot_dss, envio, no_cubre = sugerir_dss(frec, cum, R, pt.dss_tope)
     exhi = df["Exhi"].astype(float).values
     dest = pd.to_numeric(df["DESTACADOS"], errors="coerce").fillna(0).values if "DESTACADOS" in df.columns else np.zeros(len(df))
+    inv = pd.to_numeric(df["INV NETO"], errors="coerce").fillna(0).values if "INV NETO" in df.columns else np.zeros(len(df))
+    dss, mot_dss, envio, no_cubre = sugerir_dss(frec, cum, R, pt.dss_tope, inv=inv, exhibicion=exhi + dest)
     roq = envio + exhi + dest                              # ROQ = Proyectado + Cubrimiento + Exhibición (+ Destacado), con el DSS sugerido
     umbral = df["UMBRAL TDF"].astype(float).values
     nivel_bajo = pd.Series(roq < umbral - 1e-9, index=df.index)
@@ -136,6 +147,12 @@ def procesar_m_a_tdf(df_bi: pd.DataFrame, p: Params | None = None, pt: ParamsTDF
     df["MOTIVO DSS"] = np.where(pasa, mot_dss, "")
     df["VENTA DEL CICLO"] = np.where(pasa, R * frec, np.nan)
     df["PROY+CUBR (DSS SUGERIDO)"] = np.where(pasa, envio, np.nan)
+    pedido = np.maximum(roq - inv, 0)                      # lo que TDF pide: ROQ menos lo que ya hay en el local
+    stock_prox = inv + pedido - R * frec                   # lo que queda al llegar el próximo despacho
+    ex_total = exhi + dest
+    df["PEDIDO TDF (DSS SUGERIDO)"] = np.where(pasa, pedido, np.nan)
+    df["STOCK AL PROXIMO DESPACHO"] = np.where(pasa, stock_prox, np.nan)
+    df["% EXHIBICION AL PROXIMO DESPACHO"] = np.where(pasa & (ex_total > 0), stock_prox / np.where(ex_total > 0, ex_total, np.nan), np.nan)
     df["VENTA REAL / PRONOSTICO"] = np.where(pasa & (prom > 0), R / np.where(prom > 0, prom, np.nan), np.nan)
 
     # ---- Alertas (solo informan) ----
@@ -144,12 +161,17 @@ def procesar_m_a_tdf(df_bi: pd.DataFrame, p: Params | None = None, pt: ParamsTDF
     a1 = np.where(sin_venta, f"Sin venta en los {p.dias_transcurridos:g} días transcurridos del mes, con pronóstico normal", "")
     a2 = np.where(venta_alta, [f"Venta real {r / q:.1f} veces el pronóstico ({r:.2f} vs {q:.2f} u/día)" if q > 0 else "" for r, q in zip(R, prom)], "")
     a3 = np.where(pasa & no_cubre,
-                  [f"Ni con el DSS máximo ({d}) el envío cubre la venta del ciclo ({v:.1f} vs {e:.1f} u)" for d, v, e in zip(dss, R * frec, envio)], "")
+                  [f"Exhibición incompleta al próximo despacho aun con el DSS máximo ({d}): quedarían {max(sp, 0):.1f} de {ex:g} u "
+                   f"({max(sp, 0) / ex:.0%}). Pedido {pd_:.1f} u (ROQ {q:.1f} − INV NETO {i:g}) y venta del ciclo {v:.1f} u"
+                   if ex > 0 else
+                   f"El adicional ({e:.1f} u) no alcanza la venta del ciclo ({v:.1f} u) aun con el DSS máximo ({d})"
+                   for d, v, e, q, i, pd_, sp, ex in zip(dss, R * frec, envio, roq, inv, pedido, stock_prox, ex_total)], "")
     df["ALERTA"] = [" | ".join(x for x in t if x) for t in zip(a1, a2, a3)]
 
     pegar = ["DECISION", "MOTIVO", "DIAS SS SUGERIDO", "MOTIVO DSS", "ALERTA", "Método", "CD", "Local", "DESIGNACION", "ESTADISTICO",
              "DESCRIPCION", "FAMILIA", "EXCLUSION", "EMPAQUE", "SUBEMPAQUE", "Exhi", "Min", "Max", "CONSUMOS ACU", "CONSUMO DIA",
-             "PROMEDIO PRONOSTICO DIA", "VENTA REAL / PRONOSTICO", "VENTA DEL CICLO", "PROY+CUBR (DSS SUGERIDO)", "DIAS SS ACTUAL",
+             "PROMEDIO PRONOSTICO DIA", "VENTA REAL / PRONOSTICO", "VENTA DEL CICLO", "PROY+CUBR (DSS SUGERIDO)", "PEDIDO TDF (DSS SUGERIDO)",
+             "STOCK AL PROXIMO DESPACHO", "% EXHIBICION AL PROXIMO DESPACHO", "DIAS SS ACTUAL",
              "FREC EFECTIVA", "INV NETO", "Físico", "CLASE PRONOSTICO", "ROQ (DSS SUGERIDO)", "UMBRAL TDF", "% ROQ/UMBRAL"]
     res = df[[c for c in pegar if c in df.columns]].copy()
     res["Método"] = "M"
@@ -167,7 +189,7 @@ def procesar_m_a_tdf(df_bi: pd.DataFrame, p: Params | None = None, pt: ParamsTDF
         "con_alerta": int((al != "").sum()),
         "alertas_sin_venta": int(al.str.contains("Sin venta", regex=False).sum()),
         "alertas_venta_alta": int(al.str.contains("Venta real", regex=False).sum()),
-        "alertas_no_cubre": int(al.str.contains("Ni con el DSS máximo", regex=False).sum()),
+        "alertas_no_cubre": int(al.str.contains("Exhibición incompleta|no alcanza la venta del ciclo", regex=True).sum()),
         "estadisticos_pasan": int(pas["ESTADISTICO"].nunique()),
         "locales_pasan": int(pas["Local"].nunique()) if "Local" in pas else 0,
         "estadisticos_m": int(res["ESTADISTICO"].nunique()),
@@ -204,11 +226,12 @@ def exportar_excel_tdf(res: pd.DataFrame, resumen: dict, destino, p: Params | No
     ROJO, ROJO_OSC, GRIS_CLARO, BLANCO = "E30613", "A30410", "F4F4F4", "FFFFFF"
     pasan = res[res["DECISION"] == "Pasar a TDF"].reset_index(drop=True)
     quedan = res[res["DECISION"] == "Dejar en M"].drop(columns=["DIAS SS SUGERIDO", "MOTIVO DSS", "VENTA REAL / PRONOSTICO", "VENTA DEL CICLO",
-                                                               "PROY+CUBR (DSS SUGERIDO)", "ALERTA"], errors="ignore").reset_index(drop=True)
+                                                               "PROY+CUBR (DSS SUGERIDO)", "PEDIDO TDF (DSS SUGERIDO)", "STOCK AL PROXIMO DESPACHO",
+                                                               "% EXHIBICION AL PROXIMO DESPACHO", "ALERTA"], errors="ignore").reset_index(drop=True)
     carga = hoja_carga(res)
     ent = {"EMPAQUE", "SUBEMPAQUE", "Exhi", "Min", "Max", "CONSUMOS ACU", "INV NETO", "Físico", "FREC EFECTIVA", "DIAS SS ACTUAL", "DIAS SS SUGERIDO"}
     dec = {"CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "ROQ (DSS SUGERIDO)", "UMBRAL TDF", "VENTA REAL / PRONOSTICO", "VENTA DEL CICLO",
-           "PROY+CUBR (DSS SUGERIDO)"}
+           "PROY+CUBR (DSS SUGERIDO)", "PEDIDO TDF (DSS SUGERIDO)", "STOCK AL PROXIMO DESPACHO"}
     ambar = PatternFill("solid", fgColor="FFE699")
     azul_claro = PatternFill("solid", fgColor="DDEBF7")
     lado = Side(style="thin", color="D9D9D9")
@@ -236,7 +259,7 @@ def exportar_excel_tdf(res: pd.DataFrame, resumen: dict, destino, p: Params | No
                 c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
                 ancho = {"DESCRIPCION": 44, "MOTIVO": 52, "MOTIVO DSS": 34, "ALERTA": 70, "DESIGNACION": 22}.get(col, min(max(len(str(col)) + 2, 10), 30))
                 ws.column_dimensions[get_column_letter(i)].width = ancho
-                fmt = "0" if col in ent else ("0.0" if col in dec else ("0%" if col == "% ROQ/UMBRAL" else None))
+                fmt = "0" if col in ent else ("0.0" if col in dec else ("0%" if col in ("% ROQ/UMBRAL", "% EXHIBICION AL PROXIMO DESPACHO") else None))
                 if fmt:
                     for r in range(2, len(d) + 2):
                         ws.cell(row=r, column=i).number_format = fmt
@@ -343,7 +366,7 @@ def exportar_excel_tdf(res: pd.DataFrame, resumen: dict, destino, p: Params | No
         encabezado_tabla(["Alerta", "Filas", "% de los que pasan"])
         for etq, k in (("Sin venta en el mes, con pronóstico normal", "alertas_sin_venta"),
                        (f"Venta real ≥ {p.factor_consumo_vs_pron:g} veces el pronóstico (y ≥ {p.consumo_min_subestima:g} u/día)", "alertas_venta_alta"),
-                       (f"Ni con el DSS máximo ({pt.dss_tope}) el envío cubre la venta del ciclo", "alertas_no_cubre")):
+                       (f"Exhibición incompleta al próximo despacho aun con el DSS máximo ({pt.dss_tope})", "alertas_no_cubre")):
             linea([etq, resumen[k], resumen[k] / max(resumen["pasan"], 1)])
 
         titulo("6. Reglas aplicadas")
@@ -353,10 +376,11 @@ def exportar_excel_tdf(res: pd.DataFrame, resumen: dict, destino, p: Params | No
                                f"(sin subempaque) o al {p.pct_subempaque_cobertura:.0%} del SUBEMPAQUE (con subempaque)."),
             ("Exclusiones", f"LI, vacía, IP y SP pueden pasar a TDF porque se puede despachar desde el CD. "
                             f"{', '.join(pt.excl_bloquean) or 'Ninguna'} se quedan en M: no se despacha del CD al local."),
-            ("DSS sugerido", "Base = frecuencia de despacho. Lo que TDF envía es Proyectado (pronóstico del día de despacho) + Cubrimiento (pronóstico de "
-                             "los FREC + DSS días siguientes) + Exhibición (+ Destacado). Si Proyectado + Cubrimiento no alcanza la venta real hasta el "
-                             f"próximo despacho (CONSUMO DIA × frecuencia), se suben los DSS hasta que alcance, con un máximo de {pt.dss_tope}."),
-            ("ALERTA", "Solo informa: sin venta en el mes, venta real muy superior al pronóstico, o venta del ciclo que no se cubre ni con el DSS máximo."),
+            ("DSS sugerido", "Base = frecuencia de despacho. ROQ = Proyectado (pronóstico del día de despacho) + Cubrimiento (pronóstico de "
+                             "los FREC + DSS días siguientes) + Exhibición (+ Destacado). Pedido TDF = ROQ − INV NETO (0 si el local ya tiene más). "
+                             "Al llegar el próximo despacho debe quedar el 100 % de la exhibición: INV NETO + Pedido − CONSUMO DIA × frecuencia ≥ Exhibición. "
+                             f"Si no alcanza, se suben los DSS hasta que alcance, con un máximo de {pt.dss_tope}."),
+            ("ALERTA", "Solo informa: sin venta en el mes, venta real muy superior al pronóstico, o exhibición incompleta al próximo despacho ni con el DSS máximo."),
             ("Hoja CARGA TDF", "Local, estadístico, método nuevo (TDF) y días de stock de seguridad a colocar; la última columna (ALERTA) se puede borrar antes de cargar."),
         ]
         for k, v in reglas:

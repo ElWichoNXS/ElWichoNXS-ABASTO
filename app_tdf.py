@@ -15,7 +15,7 @@ from estilo import C_ALT, C_BAJO, C_EXT, C_OK, chips, encabezado, grafico, kpis,
 from motor_minmax import ColumnasPronosticoError, Params, leer_bi
 from motor_tdf import EXCLUSIONES_BLOQUEAN, VERSION_TDF, ParamsTDF, exportar_excel_tdf, procesar_m_a_tdf
 
-VERSION_APP_TDF = "2026-11-12-c"
+VERSION_APP_TDF = "2026-11-12-d"
 TIPOS_ARCHIVO = ["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "txt"]
 ETQ_COD = {"LI": "LI · liberado (también vacía)", "IP": "IP · bloqueo parcial", "SP": "SP · suspensión parcial",
            "IT": "IT · bloqueo total", "ST": "ST · suspensión total"}
@@ -106,9 +106,9 @@ def main():
         with st.expander("3 · Días de stock de seguridad (DSS)"):
             tope_dss = st.number_input(
                 "Máximo de DSS que se sugiere", min_value=1, max_value=20, value=10, key="tdf_tope_dss",
-                help="Al pasar a TDF se sugiere como DSS la frecuencia de despacho. Si lo que envía TDF (Proyectado + Cubrimiento) no alcanza "
-                     "la venta real hasta el próximo despacho, se suben los DSS hasta que alcance, sin pasar de este máximo. "
-                     "Si ni con el máximo alcanza, queda con una alerta.")
+                help="Al pasar a TDF se sugiere como DSS la frecuencia de despacho. Al llegar el próximo despacho debe quedar el 100 % de la "
+                     "exhibición: INV NETO + pedido de TDF − venta del ciclo ≥ exhibición (pedido = ROQ − INV NETO). Si no alcanza, se suben "
+                     "los DSS sin pasar de este máximo. Si ni con el máximo alcanza, queda con una alerta.")
         with st.expander("4 · Exclusiones y alertas"):
             excl = st.multiselect(
                 "Exclusiones que se quedan en M", list(ETQ_COD), default=list(EXCLUSIONES_BLOQUEAN), format_func=ETQ_COD.get, key="tdf_excl",
@@ -225,13 +225,14 @@ def main():
             top = top.merge(tot_m, left_on="ESTADISTICO", right_index=True, how="left")
             st.dataframe(top, hide_index=True, width="stretch", height=min(460, 35 * (len(top) + 1) + 3))
     cols_pas = ["DIAS SS SUGERIDO", "MOTIVO DSS", "ALERTA", "MOTIVO", "DIAS SS ACTUAL", "FREC EFECTIVA", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "EXCLUSION", "Exhi", "Min", "Max",
-                "CONSUMOS ACU", "CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "VENTA DEL CICLO", "PROY+CUBR (DSS SUGERIDO)", "ROQ (DSS SUGERIDO)", "UMBRAL TDF"]
+                "CONSUMOS ACU", "CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "VENTA DEL CICLO", "INV NETO", "PROY+CUBR (DSS SUGERIDO)", "ROQ (DSS SUGERIDO)", "PEDIDO TDF (DSS SUGERIDO)",
+                "STOCK AL PROXIMO DESPACHO", "% EXHIBICION AL PROXIMO DESPACHO", "UMBRAL TDF"]
     with t_pas:
         _tabla(pasan, "pas", cols_pas, extra_filtros=[("EXCLUSION", "Exclusión")])
     with t_ale:
         if len(con_alerta):
             st.markdown(nota_html("Estos estadísticos pasan a TDF pero conviene revisarlos: <b>no tuvieron venta en el mes</b>, la <b>venta real supera mucho "
-                                  "al pronóstico</b>, o <b>ni con el DSS máximo</b> se cubre la venta hasta el próximo despacho. Mira la columna ALERTA.", "warn"), unsafe_allow_html=True)
+                                  "al pronóstico</b>, o <b>ni con el DSS máximo</b> queda la exhibición completa al próximo despacho. Mira la columna ALERTA.", "warn"), unsafe_allow_html=True)
             _tabla(con_alerta, "ale", cols_pas, extra_filtros=[("ESTADISTICO", "Estadístico")])
         else:
             st.info("Ningún estadístico que pasa a TDF tiene alertas.")

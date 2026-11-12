@@ -74,7 +74,22 @@ def main():
     fr = int(ra.loc[0, "FREC EFECTIVA"])
     assert ra.loc[0, "DECISION"] == "Pasar a TDF" and ra.loc[0, "DIAS SS SUGERIDO"] > fr
     assert "Venta real" in ra.loc[0, "ALERTA"] and rs["alertas_venta_alta"] == 1
-    assert "Ni con el DSS máximo" in ra.loc[0, "ALERTA"] and ra.loc[0, "DIAS SS SUGERIDO"] == max(10, fr)   # no alcanza ni con el tope
+    assert "Exhibición incompleta" in ra.loc[0, "ALERTA"] and ra.loc[0, "DIAS SS SUGERIDO"] == max(10, fr)   # no alcanza ni con el tope
+    assert ra.loc[0, "STOCK AL PROXIMO DESPACHO"] < ra.loc[0, "Exhi"] and rs["alertas_no_cubre"] == 1
+    # con INV NETO suficiente en el local, la exhibición queda completa sin subir el DSS ni alertar
+    alto_inv = pd.DataFrame([fila(1, NORMAL, "LI", cons=330)]).assign(**{"INV NETO": 500})
+    ri, rsi = procesar_m_a_tdf(alto_inv, Params(dias_transcurridos=11), ParamsTDF(dss_tope=10))
+    assert ri.loc[0, "DIAS SS SUGERIDO"] == int(ri.loc[0, "FREC EFECTIVA"]) and rsi["alertas_no_cubre"] == 0
+    assert ri.loc[0, "PEDIDO TDF (DSS SUGERIDO)"] == 0 and ri.loc[0, "% EXHIBICION AL PROXIMO DESPACHO"] >= 1
+    # regla: stock al próximo despacho = INV NETO + pedido − venta del ciclo, con pedido = max(0, ROQ − INV NETO)
+    for t in (ra, ri):
+        q, i, v = t.loc[0, "ROQ (DSS SUGERIDO)"], t.loc[0, "INV NETO"], t.loc[0, "VENTA DEL CICLO"]
+        assert abs(t.loc[0, "STOCK AL PROXIMO DESPACHO"] - (i + max(q - i, 0) - v)) < 0.02
+    # caso real: exhibición 24, falta 0,6 u por ciclo -> con el 100 % de la exhibición sí alerta; con inventario no
+    cum24 = np.full((1, 30), 0.0); cum24[0, :] = np.linspace(0.5, 6.7, 30)
+    _, _, _, nc24 = sugerir_dss([2], cum24, [3.65], 10, inv=[10], exhibicion=[24])
+    _, _, _, nc24i = sugerir_dss([2], cum24, [3.65], 10, inv=[40], exhibicion=[24])
+    assert nc24[0] and not nc24i[0]
     # venta moderada: el DSS sube lo justo para cubrir la venta del ciclo
     med = pd.DataFrame([fila(1, NORMAL, "LI", cons=33)])                                          # 3 u/día contra ~1 u/día
     rm, _ = procesar_m_a_tdf(med, Params(dias_transcurridos=11), ParamsTDF(dss_tope=10))

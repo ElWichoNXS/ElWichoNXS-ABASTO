@@ -67,9 +67,9 @@ Si pasa a TDF pero no tuvo venta en el mes (con pronóstico normal), cambia igua
 
 **Días de stock de seguridad (DSS) sugeridos.** En TDF el DSS es obligatorio, así que a cada estadístico que pasa se le sugiere cuántos cargar. El DSS sugerido depende solo de la frecuencia y la venta real (no de quién pasa), y con él se calcula el ROQ que se compara contra el umbral.
 - Base = frecuencia de despacho efectiva (`FREC EFECTIVA`).
-- Lo que TDF envía es `Proyectado + Cubrimiento + Exhibición (+ Destacado)`. Si `Proyectado + Cubrimiento` no alcanza la venta real hasta el próximo despacho (`CONSUMO DIA × frecuencia`), se suben los DSS hasta que alcance, con un máximo configurable (10 por defecto).
-- Columnas nuevas: `DIAS SS SUGERIDO`, `MOTIVO DSS` (frecuencia / frecuencia + consumo alto / no cubre ni con el máximo), `DIAS SS ACTUAL`, `ROQ (DSS SUGERIDO)`, `% ROQ/UMBRAL`, `VENTA DEL CICLO`, `PROY+CUBR (DSS SUGERIDO)`, `VENTA REAL / PRONOSTICO`. En `CARGA TDF` va `DIAS SS SUGERIDO`.
-- Alertas (solo informan): sin venta en el mes; venta real ≥ 3 veces el pronóstico (y ≥ 2 u/día); ni con el DSS máximo se cubre la venta del ciclo.
+- `ROQ = Proyectado + Cubrimiento + Exhibición (+ Destacado)` y el pedido de TDF es `ROQ − INV NETO` (0 si el local ya tiene más). Al llegar el próximo despacho debe quedar el **100 % de la exhibición**: `INV NETO + pedido − CONSUMO DIA × frecuencia ≥ Exhibición (+ Destacado)`. Si no alcanza, se suben los DSS hasta que alcance, con un máximo configurable (10 por defecto); si el INV NETO ya alcanza, el DSS queda en la frecuencia.
+- Columnas nuevas: `DIAS SS SUGERIDO`, `MOTIVO DSS` (frecuencia / frecuencia + consumo alto / no cubre ni con el máximo), `DIAS SS ACTUAL`, `ROQ (DSS SUGERIDO)`, `% ROQ/UMBRAL`, `VENTA DEL CICLO`, `PROY+CUBR (DSS SUGERIDO)`, `PEDIDO TDF (DSS SUGERIDO)`, `STOCK AL PROXIMO DESPACHO`, `% EXHIBICION AL PROXIMO DESPACHO`, `VENTA REAL / PRONOSTICO`. En `CARGA TDF` va `DIAS SS SUGERIDO`.
+- Alertas (solo informan): sin venta en el mes; venta real ≥ 3 veces el pronóstico (y ≥ 2 u/día); ni con el DSS máximo queda la exhibición completa al próximo despacho.
 
 El Excel trae: **Resumen**, **PASAN A TDF** (con motivo y alerta), **CARGA TDF** (Local, estadístico, método actual M y nuevo TDF, alerta; la columna ALERTA se puede borrar antes de cargar) y **SE QUEDAN EN M** (con el motivo: exclusión, pronóstico cero, sin pronóstico, lineal o nivel TDF bajo).
 
