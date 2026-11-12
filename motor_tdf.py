@@ -5,10 +5,11 @@ y sugiere los días de stock de seguridad (DSS) que se deben cargar al pasarlos.
 Es el camino inverso a motor_minmax.procesar y usa la MISMA clasificación del pronóstico
 (motor_minmax.clasificar_pronostico). Un estadístico en M pasa a TDF si:
   1) su pronóstico es NORMAL (no es cero, ni sin pronóstico, ni lineal), y
-  2) el nivel que TDF buscaría tener en el local (Proyectado + Cubrimiento + Exhibición + Destacado) alcanza
-     el 50 % del EMPAQUE (sin subempaque) o el 100 % del SUBEMPAQUE (con subempaque), y
+  2) el ROQ, es decir lo que TDF enviaría (Proyectado + Cubrimiento + Exhibición + Destacado) calculado con el
+     DSS SUGERIDO (no con el DSS que trae el BI), alcanza el 50 % del EMPAQUE (sin subempaque) o el 100 % del
+     SUBEMPAQUE (con subempaque), y
   3) su exclusión permite despachar desde el CD: LI, vacía, IP y SP sí; IT y ST no (se quedan en M).
-Quién pasa NO depende del DSS sugerido: el nivel se mide con el DSS que trae el BI, como siempre.
+El DSS sugerido no depende de quién pasa (solo de la frecuencia y la venta real), así que no hay circularidad.
 
 DSS SUGERIDO (para los que pasan a TDF; en TDF es obligatorio cargarlo):
   - Base = frecuencia de despacho (FREC EFECTIVA).
@@ -29,7 +30,7 @@ import pandas as pd
 
 from motor_minmax import Params, clasificar_pronostico
 
-VERSION_TDF = "2026-11-12-b"
+VERSION_TDF = "2026-11-12-c"
 
 EXCLUSIONES_BLOQUEAN = ("IT", "ST")           # sin transferencia del CD al local: se quedan en M
 ETQ_EXCLUSION = {"LI": "LI / vacía", "IT": "IT · bloqueo total", "IP": "IP · bloqueo parcial",
@@ -99,8 +100,22 @@ def procesar_m_a_tdf(df_bi: pd.DataFrame, p: Params | None = None, pt: ParamsTDF
     cod = df["EXCLUSION"]
     bloqueado = cod.isin([c.upper() for c in pt.excl_bloquean])
     clase = df["CLASE PRONOSTICO"]
-    nivel_bajo = df["NIVEL BAJO"].astype(bool)
     con_sub = df["_CON_SUB"].astype(bool)
+
+    # ---- DSS sugerido y ROQ con ese DSS (para todas las filas: el ROQ se mide con lo que realmente se enviaría) ----
+    frec = df["FREC EFECTIVA"].values.astype(int)
+    R = df["CONSUMO DIA"].astype(float).values
+    prom = df["PROMEDIO PRONOSTICO DIA"].astype(float).values
+    cum = info["_cum"]
+    idx = np.arange(len(df))
+    dss, mot_dss, envio, no_cubre = sugerir_dss(frec, cum, R, pt.dss_tope)
+    exhi = df["Exhi"].astype(float).values
+    dest = pd.to_numeric(df["DESTACADOS"], errors="coerce").fillna(0).values if "DESTACADOS" in df.columns else np.zeros(len(df))
+    roq = envio + exhi + dest                              # ROQ = Proyectado + Cubrimiento + Exhibición (+ Destacado), con el DSS sugerido
+    umbral = df["UMBRAL TDF"].astype(float).values
+    nivel_bajo = pd.Series(roq < umbral - 1e-9, index=df.index)
+    df["ROQ (DSS SUGERIDO)"] = np.round(roq, 2)
+    df["% ROQ/UMBRAL"] = roq / np.where(umbral > 0, umbral, np.nan)
     pron_ok = (clase == "Normal") & ~nivel_bajo
     pasa = (pron_ok & ~bloqueado).values
 
@@ -108,17 +123,13 @@ def procesar_m_a_tdf(df_bi: pd.DataFrame, p: Params | None = None, pt: ParamsTDF
         [bloqueado, clase == "Sin pronóstico", clase == "Cero", clase == "Lineal", nivel_bajo & con_sub, nivel_bajo],
         ["Exclusión " + cod + ": no se puede despachar desde el CD",
          "Sin pronóstico", "Pronóstico cero", "Pronóstico lineal (repetido)",
-         f"Nivel TDF < {p.pct_subempaque_cobertura:.0%} del subempaque",
-         f"Nivel TDF < {p.pct_empaque_cobertura:.0%} del empaque"],
-        default="Pronóstico normal y nivel TDF suficiente")
+         f"ROQ con el DSS sugerido < {p.pct_subempaque_cobertura:.0%} del subempaque",
+         f"ROQ con el DSS sugerido < {p.pct_empaque_cobertura:.0%} del empaque"],
+        default="Pronóstico normal y ROQ suficiente")
     df["DECISION"] = np.where(pasa, "Pasar a TDF", "Dejar en M")
     df["MOTIVO"] = motivo
 
     # ---- Días de stock de seguridad sugeridos (solo para los que pasan a TDF) ----
-    frec = df["FREC EFECTIVA"].values.astype(int)
-    R = df["CONSUMO DIA"].astype(float).values
-    prom = df["PROMEDIO PRONOSTICO DIA"].astype(float).values
-    dss, mot_dss, envio, no_cubre = sugerir_dss(frec, info["_cum"], R, pt.dss_tope)
     df["DIAS SS ACTUAL"] = df["Dias SS"]
     df["DIAS SS SUGERIDO"] = pd.array(np.where(pasa, dss, -1), dtype="Int64")
     df.loc[~pasa, "DIAS SS SUGERIDO"] = pd.NA
@@ -139,7 +150,7 @@ def procesar_m_a_tdf(df_bi: pd.DataFrame, p: Params | None = None, pt: ParamsTDF
     pegar = ["DECISION", "MOTIVO", "DIAS SS SUGERIDO", "MOTIVO DSS", "ALERTA", "Método", "CD", "Local", "DESIGNACION", "ESTADISTICO",
              "DESCRIPCION", "FAMILIA", "EXCLUSION", "EMPAQUE", "SUBEMPAQUE", "Exhi", "Min", "Max", "CONSUMOS ACU", "CONSUMO DIA",
              "PROMEDIO PRONOSTICO DIA", "VENTA REAL / PRONOSTICO", "VENTA DEL CICLO", "PROY+CUBR (DSS SUGERIDO)", "DIAS SS ACTUAL",
-             "FREC EFECTIVA", "INV NETO", "Físico", "CLASE PRONOSTICO", "COBERTURA TDF", "UMBRAL TDF", "% COBERTURA/UMBRAL"]
+             "FREC EFECTIVA", "INV NETO", "Físico", "CLASE PRONOSTICO", "ROQ (DSS SUGERIDO)", "UMBRAL TDF", "% ROQ/UMBRAL"]
     res = df[[c for c in pegar if c in df.columns]].copy()
     res["Método"] = "M"
     res["ESTADISTICO"] = pd.to_numeric(res["ESTADISTICO"], errors="coerce").astype("Int64")
@@ -196,7 +207,7 @@ def exportar_excel_tdf(res: pd.DataFrame, resumen: dict, destino, p: Params | No
                                                                "PROY+CUBR (DSS SUGERIDO)", "ALERTA"], errors="ignore").reset_index(drop=True)
     carga = hoja_carga(res)
     ent = {"EMPAQUE", "SUBEMPAQUE", "Exhi", "Min", "Max", "CONSUMOS ACU", "INV NETO", "Físico", "FREC EFECTIVA", "DIAS SS ACTUAL", "DIAS SS SUGERIDO"}
-    dec = {"CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "COBERTURA TDF", "UMBRAL TDF", "VENTA REAL / PRONOSTICO", "VENTA DEL CICLO",
+    dec = {"CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "ROQ (DSS SUGERIDO)", "UMBRAL TDF", "VENTA REAL / PRONOSTICO", "VENTA DEL CICLO",
            "PROY+CUBR (DSS SUGERIDO)"}
     ambar = PatternFill("solid", fgColor="FFE699")
     azul_claro = PatternFill("solid", fgColor="DDEBF7")
@@ -225,7 +236,7 @@ def exportar_excel_tdf(res: pd.DataFrame, resumen: dict, destino, p: Params | No
                 c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
                 ancho = {"DESCRIPCION": 44, "MOTIVO": 52, "MOTIVO DSS": 34, "ALERTA": 70, "DESIGNACION": 22}.get(col, min(max(len(str(col)) + 2, 10), 30))
                 ws.column_dimensions[get_column_letter(i)].width = ancho
-                fmt = "0" if col in ent else ("0.0" if col in dec else ("0%" if col == "% COBERTURA/UMBRAL" else None))
+                fmt = "0" if col in ent else ("0.0" if col in dec else ("0%" if col == "% ROQ/UMBRAL" else None))
                 if fmt:
                     for r in range(2, len(d) + 2):
                         ws.cell(row=r, column=i).number_format = fmt
@@ -337,8 +348,8 @@ def exportar_excel_tdf(res: pd.DataFrame, resumen: dict, destino, p: Params | No
 
         titulo("6. Reglas aplicadas")
         reglas = [
-            ("Pasa a TDF si…", f"el pronóstico es normal (ni cero, ni lineal) y el nivel que TDF busca tener en el local "
-                               f"(Proyectado + Cubrimiento + Exhibición + Destacado) llega al {p.pct_empaque_cobertura:.0%} del EMPAQUE "
+            ("Pasa a TDF si…", f"el pronóstico es normal (ni cero, ni lineal) y el ROQ con el DSS sugerido "
+                               f"(Proyectado + Cubrimiento + Exhibición + Destacado, o sea lo que TDF enviaría) llega al {p.pct_empaque_cobertura:.0%} del EMPAQUE "
                                f"(sin subempaque) o al {p.pct_subempaque_cobertura:.0%} del SUBEMPAQUE (con subempaque)."),
             ("Exclusiones", f"LI, vacía, IP y SP pueden pasar a TDF porque se puede despachar desde el CD. "
                             f"{', '.join(pt.excl_bloquean) or 'Ninguna'} se quedan en M: no se despacha del CD al local."),

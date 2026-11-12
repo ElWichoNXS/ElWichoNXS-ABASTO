@@ -33,9 +33,10 @@ def main():
         fila(8, [0.3] * 12),                                      # lineal
         fila(9, [np.nan] * 12),                                   # sin pronóstico
         fila(10, NORMAL, exhi=1, emp=24),                         # nivel bajo (empaque)
-        fila(11, NORMAL, exhi=1, emp=24, sub=6),                  # nivel bajo (subempaque)
+        fila(11, NORMAL, exhi=0, emp=48, sub=12),                 # nivel bajo (subempaque)
         fila(12, NORMAL, metodo="TDF"),                           # otro método: no se evalúa
         fila(13, NORMAL, "IT", cons=0),                           # exclusión bloquea aunque no haya venta
+        fila(14, NORMAL, "LI", exhi=1, emp=24, sub=6),            # con DSS 0 no llegaba al subempaque; con el DSS sugerido sí -> pasa
     ]
     df = pd.DataFrame(filas)
     res, r = procesar_m_a_tdf(df, Params(dias_transcurridos=11), ParamsTDF())
@@ -49,22 +50,24 @@ def main():
     assert d.loc[7, "MOTIVO"] == "Pronóstico cero" and d.loc[8, "MOTIVO"].startswith("Pronóstico lineal")
     assert d.loc[9, "MOTIVO"] == "Sin pronóstico"
     assert "empaque" in d.loc[10, "MOTIVO"] and "subempaque" in d.loc[11, "MOTIVO"]
+    assert d.loc[14, "DECISION"] == "Pasar a TDF" and d.loc[14, "DIAS SS ACTUAL"] == 0 and d.loc[14, "ROQ (DSS SUGERIDO)"] >= d.loc[14, "UMBRAL TDF"]
+    assert d.loc[14, "DIAS SS SUGERIDO"] > 0                       # el ROQ se mide con el DSS sugerido, no con el del BI
     assert d.loc[13, "ALERTA"] == ""                               # la alerta es solo para los que pasan
     assert d.loc[2, "ALERTA"] != "" and d.loc[1, "ALERTA"] == ""
-    assert r["pasan"] == 4 and r["alertas_sin_venta"] == 1 and r["quedan"] == 8 and r["filas_m"] == 12
+    assert r["pasan"] == 5 and r["alertas_sin_venta"] == 1 and r["quedan"] == 8 and r["filas_m"] == 13
     c = hoja_carga(res)
-    assert list(c["ESTADISTICO"]) == [1, 2, 3, 4] and set(c["MÉTODO NUEVO"]) == {"TDF"}
+    assert list(c["ESTADISTICO"]) == [1, 2, 3, 4, 14] and set(c["MÉTODO NUEVO"]) == {"TDF"}
     # las exclusiones que bloquean se pueden cambiar
     res2, r2 = procesar_m_a_tdf(df, Params(dias_transcurridos=11), ParamsTDF(excl_bloquean=("ST",)))
-    assert res2.set_index("ESTADISTICO").loc[5, "DECISION"] == "Pasar a TDF" and r2["pasan"] == 6
+    assert res2.set_index("ESTADISTICO").loc[5, "DECISION"] == "Pasar a TDF" and r2["pasan"] == 7
     # sin alerta si se desactiva
     res3, r3 = procesar_m_a_tdf(df, Params(dias_transcurridos=11), ParamsTDF(alerta_sin_venta=False))
     assert r3["alertas_sin_venta"] == 0
     # DSS sugerido: solo para los que pasan; base = frecuencia efectiva
     assert d.loc[[5, 6, 7, 13], "DIAS SS SUGERIDO"].isna().all() and (d.loc[[5, 6, 7, 13], "MOTIVO DSS"] == "").all()
-    assert (c["DIAS SS SUGERIDO"] == d.loc[[1, 2, 3, 4], "FREC EFECTIVA"].values).all()          # venta baja -> DSS = frecuencia
-    assert set(d.loc[[1, 2, 3, 4], "MOTIVO DSS"]) == {"Frecuencia de despacho"}
-    assert sum(r["dss_por_valor"].values()) == 4 and r["dss_tope"] == 10
+    assert (c["DIAS SS SUGERIDO"] == d.loc[[1, 2, 3, 4, 14], "FREC EFECTIVA"].values).all()          # venta baja -> DSS = frecuencia
+    assert set(d.loc[[1, 2, 3, 4, 14], "MOTIVO DSS"]) == {"Frecuencia de despacho"}
+    assert sum(r["dss_por_valor"].values()) == 5 and r["dss_tope"] == 10
     # venta real muy superior al pronóstico: sube el DSS, avisa y no cambia quién pasa
     alto = pd.DataFrame([fila(1, NORMAL, "LI", cons=330)])                                        # 30 u/día contra ~1 u/día
     ra, rs = procesar_m_a_tdf(alto, Params(dias_transcurridos=11), ParamsTDF(dss_tope=10))
@@ -88,7 +91,7 @@ def main():
     exportar_excel_tdf(res, r, buf, Params(dias_transcurridos=11))
     wb = openpyxl.load_workbook(buf)
     assert wb.sheetnames == ["Resumen", "PASAN A TDF", "CARGA TDF", "SE QUEDAN EN M"], wb.sheetnames
-    assert wb["PASAN A TDF"].max_row == 5 and wb["SE QUEDAN EN M"].max_row == 9
+    assert wb["PASAN A TDF"].max_row == 6 and wb["SE QUEDAN EN M"].max_row == 9
     # sin filas en M o sin la columna Método: error claro
     for malo in (df.drop(columns=["Método"]), df.assign(**{"Método": "TDF"})):
         try:

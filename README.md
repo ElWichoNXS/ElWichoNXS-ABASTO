@@ -60,15 +60,15 @@ Segundo módulo de la app (selector «TDF → Min/Max · Min/Max → TDF» arrib
 
 Un estadístico pasa a TDF si cumple las tres condiciones:
 1. **Pronóstico normal:** ni cero, ni sin pronóstico, ni lineal (misma clasificación que el módulo TDF → Min/Max: `clasificar_pronostico` en `motor_minmax.py`).
-2. **Nivel TDF suficiente:** Proyectado + Cubrimiento + Exhibición + Destacado ≥ 50 % del EMPAQUE (sin subempaque) o ≥ 100 % del SUBEMPAQUE (con subempaque).
+2. **ROQ suficiente:** el ROQ = Proyectado + Cubrimiento + Exhibición + Destacado, **calculado con el DSS sugerido** (lo que TDF realmente enviaría, no con el DSS que trae el BI), debe ser ≥ 50 % del EMPAQUE (sin subempaque) o ≥ 100 % del SUBEMPAQUE (con subempaque).
 3. **Exclusión que permite despachar del CD:** LI, vacía, IP y SP pasan; IT y ST se quedan en M (se puede cambiar en el panel de parámetros).
 
 Si pasa a TDF pero no tuvo venta en el mes (con pronóstico normal), cambia igual y queda con una **ALERTA**.
 
-**Días de stock de seguridad (DSS) sugeridos.** En TDF el DSS es obligatorio, así que a cada estadístico que pasa se le sugiere cuántos cargar. Esto **no cambia quién pasa**; el nivel TDF se sigue midiendo con el DSS que trae el BI.
+**Días de stock de seguridad (DSS) sugeridos.** En TDF el DSS es obligatorio, así que a cada estadístico que pasa se le sugiere cuántos cargar. El DSS sugerido depende solo de la frecuencia y la venta real (no de quién pasa), y con él se calcula el ROQ que se compara contra el umbral.
 - Base = frecuencia de despacho efectiva (`FREC EFECTIVA`).
 - Lo que TDF envía es `Proyectado + Cubrimiento + Exhibición (+ Destacado)`. Si `Proyectado + Cubrimiento` no alcanza la venta real hasta el próximo despacho (`CONSUMO DIA × frecuencia`), se suben los DSS hasta que alcance, con un máximo configurable (10 por defecto).
-- Columnas nuevas: `DIAS SS SUGERIDO`, `MOTIVO DSS` (frecuencia / frecuencia + consumo alto / no cubre ni con el máximo), `DIAS SS ACTUAL`, `VENTA DEL CICLO`, `PROY+CUBR (DSS SUGERIDO)`, `VENTA REAL / PRONOSTICO`. En `CARGA TDF` va `DIAS SS SUGERIDO`.
+- Columnas nuevas: `DIAS SS SUGERIDO`, `MOTIVO DSS` (frecuencia / frecuencia + consumo alto / no cubre ni con el máximo), `DIAS SS ACTUAL`, `ROQ (DSS SUGERIDO)`, `% ROQ/UMBRAL`, `VENTA DEL CICLO`, `PROY+CUBR (DSS SUGERIDO)`, `VENTA REAL / PRONOSTICO`. En `CARGA TDF` va `DIAS SS SUGERIDO`.
 - Alertas (solo informan): sin venta en el mes; venta real ≥ 3 veces el pronóstico (y ≥ 2 u/día); ni con el DSS máximo se cubre la venta del ciclo.
 
 El Excel trae: **Resumen**, **PASAN A TDF** (con motivo y alerta), **CARGA TDF** (Local, estadístico, método actual M y nuevo TDF, alerta; la columna ALERTA se puede borrar antes de cargar) y **SE QUEDAN EN M** (con el motivo: exclusión, pronóstico cero, sin pronóstico, lineal o nivel TDF bajo).

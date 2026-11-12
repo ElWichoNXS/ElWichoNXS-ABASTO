@@ -15,7 +15,7 @@ from estilo import C_ALT, C_BAJO, C_EXT, C_OK, chips, encabezado, grafico, kpis,
 from motor_minmax import ColumnasPronosticoError, Params, leer_bi
 from motor_tdf import EXCLUSIONES_BLOQUEAN, VERSION_TDF, ParamsTDF, exportar_excel_tdf, procesar_m_a_tdf
 
-VERSION_APP_TDF = "2026-11-12-b"
+VERSION_APP_TDF = "2026-11-12-c"
 TIPOS_ARCHIVO = ["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "txt"]
 ETQ_COD = {"LI": "LI · liberado (también vacía)", "IP": "IP · bloqueo parcial", "SP": "SP · suspensión parcial",
            "IT": "IT · bloqueo total", "ST": "ST · suspensión total"}
@@ -92,7 +92,7 @@ def main():
             p.pct_empaque_cobertura = st.number_input(
                 "Sin subempaque: nivel TDF desde (% del empaque)", min_value=0.05, max_value=3.0, value=0.50, step=0.05, format="%.2f",
                 key="tdf_pct_emp",
-                help="Nivel TDF = Proyectado + Cubrimiento + Exhibición + Destacado. Sin subempaque, vuelve a TDF si ese nivel llega "
+                help="ROQ = Proyectado + Cubrimiento + Exhibición + Destacado, calculado con el DSS sugerido. Sin subempaque, vuelve a TDF si ese nivel llega "
                      "a este porcentaje del empaque (0,50 = la mitad). Es la misma regla que usa el módulo TDF → Min/Max, al revés.")
             p.pct_subempaque_cobertura = st.number_input(
                 "Con subempaque: nivel TDF desde (% del subempaque)", min_value=0.05, max_value=3.0, value=1.00, step=0.05, format="%.2f",
@@ -129,7 +129,7 @@ def main():
     f_bi = c1.file_uploader("BI con los estadísticos en M", type=TIPOS_ARCHIVO, key="tdf_f_bi",
                             help="Archivo del BI con el pronóstico de 12 días por local y estadístico y la columna «Método». "
                                  "Solo se evalúan las filas con Método = M; las de TDF o TEM se ignoran. Acepta Excel y CSV/TXT.")
-    c2.markdown(nota_html("Pasa a TDF el estadístico con <b>pronóstico normal</b> (ni cero ni lineal) y nivel TDF suficiente, "
+    c2.markdown(nota_html("Pasa a TDF el estadístico con <b>pronóstico normal</b> (ni cero ni lineal) y ROQ suficiente (calculado con el DSS sugerido), "
                           "siempre que su exclusión permita despachar desde el CD (LI, vacía, IP y SP). Los IT y ST se quedan en M. "
                           "Si no tuvo venta en el mes, pasa igual y queda con una <b>alerta</b>. A los que pasan se les sugiere los "
                           "<b>días de stock de seguridad</b> a cargar."), unsafe_allow_html=True)
@@ -225,7 +225,7 @@ def main():
             top = top.merge(tot_m, left_on="ESTADISTICO", right_index=True, how="left")
             st.dataframe(top, hide_index=True, width="stretch", height=min(460, 35 * (len(top) + 1) + 3))
     cols_pas = ["DIAS SS SUGERIDO", "MOTIVO DSS", "ALERTA", "MOTIVO", "DIAS SS ACTUAL", "FREC EFECTIVA", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "EXCLUSION", "Exhi", "Min", "Max",
-                "CONSUMOS ACU", "CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "VENTA DEL CICLO", "PROY+CUBR (DSS SUGERIDO)", "COBERTURA TDF", "UMBRAL TDF"]
+                "CONSUMOS ACU", "CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "VENTA DEL CICLO", "PROY+CUBR (DSS SUGERIDO)", "ROQ (DSS SUGERIDO)", "UMBRAL TDF"]
     with t_pas:
         _tabla(pasan, "pas", cols_pas, extra_filtros=[("EXCLUSION", "Exclusión")])
     with t_ale:
@@ -237,4 +237,4 @@ def main():
             st.info("Ningún estadístico que pasa a TDF tiene alertas.")
     with t_que:
         _tabla(quedan, "que", ["MOTIVO", "CLASE PRONOSTICO", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "EXCLUSION",
-                               "Exhi", "Min", "Max", "COBERTURA TDF", "UMBRAL TDF"], extra_filtros=[("MOTIVO", "Motivo")])
+                               "Exhi", "Min", "Max", "ROQ (DSS SUGERIDO)", "UMBRAL TDF"], extra_filtros=[("MOTIVO", "Motivo")])
