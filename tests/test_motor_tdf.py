@@ -84,6 +84,19 @@ def main():
     cum = np.cumsum(np.array([NORMAL + [np.mean(NORMAL)] * 10]), axis=1)
     dss, mot, env, nc = sugerir_dss([2], cum, [3.0], 10)
     assert dss[0] == 3 and env[0] >= 6.0 and cum[0, 2 + dss[0] - 1] < 6.0 and not nc[0]
+    # IDA Y VUELTA con TDF -> Min/Max (motor_minmax.procesar): el módulo es su inverso exacto.
+    #   - los que pasan a TDF, con el DSS sugerido ya cargado, NO deben volver a Min/Max;
+    #   - los que se quedan en M (sin contar IT/ST) SÍ deben ir a Min/Max.
+    from motor_minmax import procesar
+    b = df[df["Método"] == "M"].copy()
+    dss_ok = dict(zip(res["ESTADISTICO"].astype(int), res["DIAS SS SUGERIDO"].fillna(0).astype(int)))
+    b["Dias SS"] = b["ESTADISTICO"].astype(int).map(dss_ok)
+    b["Método"] = "TDF"
+    vuelven = set(procesar(b, None, Params(dias_transcurridos=11))[0]["ESTADISTICO"].astype(int))
+    pasan_ids = set(res.loc[res["DECISION"] == "Pasar a TDF", "ESTADISTICO"].astype(int))
+    quedan_ids = set(res.loc[(res["DECISION"] == "Dejar en M") & ~res["MOTIVO"].str.startswith("Exclusión"), "ESTADISTICO"].astype(int))
+    assert not (pasan_ids & vuelven), pasan_ids & vuelven
+    assert quedan_ids <= vuelven, quedan_ids - vuelven
     # Excel
     import io
     import openpyxl
