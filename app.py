@@ -39,7 +39,7 @@ if modulo == MODULOS[1]:
     import importlib
     import app_tdf
     import motor_tdf
-    if getattr(app_tdf, "VERSION_APP_TDF", None) != "2026-11-12-a" or getattr(motor_tdf, "VERSION_TDF", None) != "2026-11-12-a":
+    if getattr(app_tdf, "VERSION_APP_TDF", None) != "2026-11-12-b" or getattr(motor_tdf, "VERSION_TDF", None) != "2026-11-12-b":
         importlib.reload(motor_tdf)       # módulos viejos en memoria tras actualizar el repositorio
         importlib.reload(app_tdf)
     app_tdf.main()

@@ -15,16 +15,16 @@ from estilo import C_ALT, C_BAJO, C_EXT, C_OK, chips, encabezado, grafico, kpis,
 from motor_minmax import ColumnasPronosticoError, Params, leer_bi
 from motor_tdf import EXCLUSIONES_BLOQUEAN, VERSION_TDF, ParamsTDF, exportar_excel_tdf, procesar_m_a_tdf
 
-VERSION_APP_TDF = "2026-11-12-a"
+VERSION_APP_TDF = "2026-11-12-b"
 TIPOS_ARCHIVO = ["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "txt"]
 ETQ_COD = {"LI": "LI · liberado (también vacía)", "IP": "IP · bloqueo parcial", "SP": "SP · suspensión parcial",
            "IT": "IT · bloqueo total", "ST": "ST · suspensión total"}
 
 
 @st.cache_data(show_spinner=False, max_entries=3)
-def calcular_tdf(bytes_bi, params, excl, alerta, cols_pronostico, version=VERSION_TDF):
+def calcular_tdf(bytes_bi, params, excl, alerta, cols_pronostico, tope_dss=10, version=VERSION_TDF):
     p = Params(**params)
-    pt = ParamsTDF(excl_bloquean=tuple(excl), alerta_sin_venta=bool(alerta))
+    pt = ParamsTDF(excl_bloquean=tuple(excl), alerta_sin_venta=bool(alerta), dss_tope=int(tope_dss))
     bi = leer_bi(io.BytesIO(bytes_bi))
     res, r = procesar_m_a_tdf(bi, p, pt, list(cols_pronostico) if cols_pronostico else None)
     buf = io.BytesIO()
@@ -103,7 +103,13 @@ def main():
                 help="Un pronóstico es lineal cuando el modelo todavía no aprendió y repite valores. Se cuentan los valores que aparecen una sola "
                      "vez en los 12 días. Si el modelo solo copió la semana en los días 8 a 12, se juzga solo la primera semana. "
                      "Los lineales se quedan en M.")
-        with st.expander("3 · Exclusiones y alertas"):
+        with st.expander("3 · Días de stock de seguridad (DSS)"):
+            tope_dss = st.number_input(
+                "Máximo de DSS que se sugiere", min_value=1, max_value=20, value=10, key="tdf_tope_dss",
+                help="Al pasar a TDF se sugiere como DSS la frecuencia de despacho. Si lo que envía TDF (Proyectado + Cubrimiento) no alcanza "
+                     "la venta real hasta el próximo despacho, se suben los DSS hasta que alcance, sin pasar de este máximo. "
+                     "Si ni con el máximo alcanza, queda con una alerta.")
+        with st.expander("4 · Exclusiones y alertas"):
             excl = st.multiselect(
                 "Exclusiones que se quedan en M", list(ETQ_COD), default=list(EXCLUSIONES_BLOQUEAN), format_func=ETQ_COD.get, key="tdf_excl",
                 help="Con IT y ST no se puede transferir del CD a los locales, así que esos estadísticos se quedan en Min/Max. "
@@ -125,7 +131,8 @@ def main():
                                  "Solo se evalúan las filas con Método = M; las de TDF o TEM se ignoran. Acepta Excel y CSV/TXT.")
     c2.markdown(nota_html("Pasa a TDF el estadístico con <b>pronóstico normal</b> (ni cero ni lineal) y nivel TDF suficiente, "
                           "siempre que su exclusión permita despachar desde el CD (LI, vacía, IP y SP). Los IT y ST se quedan en M. "
-                          "Si no tuvo venta en el mes, pasa igual y queda con una <b>alerta</b>."), unsafe_allow_html=True)
+                          "Si no tuvo venta en el mes, pasa igual y queda con una <b>alerta</b>. A los que pasan se les sugiere los "
+                          "<b>días de stock de seguridad</b> a cargar."), unsafe_allow_html=True)
     if not f_bi:
         vacio("Carga el BI para ver el resultado",
               "Sube el archivo del BI con los estadísticos en método M para ver cuáles pueden volver a TDF y descargar el archivo de cambios.",
@@ -136,7 +143,7 @@ def main():
     bytes_bi = f_bi.getvalue()
     try:
         with st.spinner("Procesando el BI…"):
-            res, r, xlsx = calcular_tdf(bytes_bi, params, tuple(excl), alerta, None, VERSION_TDF)
+            res, r, xlsx = calcular_tdf(bytes_bi, params, tuple(excl), alerta, None, tope_dss, VERSION_TDF)
     except ColumnasPronosticoError as e:
         st.error(f"{e} Elige abajo las columnas del pronóstico diario.")
         elegidas = st.multiselect("Selecciona las columnas de pronóstico diario (entre 7 y 12), en orden", options=list(e.todas), format_func=str,
@@ -146,7 +153,7 @@ def main():
             return
         try:
             with st.spinner("Procesando el BI…"):
-                res, r, xlsx = calcular_tdf(bytes_bi, params, tuple(excl), alerta, tuple(elegidas), VERSION_TDF)
+                res, r, xlsx = calcular_tdf(bytes_bi, params, tuple(excl), alerta, tuple(elegidas), tope_dss, VERSION_TDF)
         except ValueError as e2:
             st.error(str(e2))
             return
@@ -168,7 +175,7 @@ def main():
     con_alerta = pasan[pasan["ALERTA"] != ""]
     d1, d2 = st.columns([3, 1.4], vertical_alignment="center")
     d1.markdown(nota_html(f'<b>{n(r["pasan"])}</b> de <b>{n(r["filas_m"])}</b> filas en M pueden volver a TDF '
-                          f'({r["pasan"] / max(r["filas_m"], 1):.1%}); <b>{n(r["alertas_sin_venta"])}</b> de ellas no tuvieron venta en el mes y quedan con alerta. '
+                          f'({r["pasan"] / max(r["filas_m"], 1):.1%}); <b>{n(r["con_alerta"])}</b> quedan con alguna alerta. '
                           'Descarga el Excel: la hoja CARGA TDF trae lo que se cambia.', "ok"), unsafe_allow_html=True)
     d2.download_button("Descargar Excel de cambios", xlsx, icon=":material/download:", key="tdf_descarga",
                        file_name=f"Min_Max_a_TDF_{hoy:%d-%m-%Y}.xlsx",
@@ -176,7 +183,7 @@ def main():
 
     kpis([("Filas en M evaluadas", n(r["filas_m"]), f"{n(r['estadisticos_m'])} estadísticos distintos", C_ALT),
           ("Pasan a TDF", n(r["pasan"]), f"{n(r['estadisticos_pasan'])} estadísticos · {n(r['locales_pasan'])} locales", C_OK),
-          ("Con alerta", n(r["alertas_sin_venta"]), "Pasan a TDF sin venta en el mes", C_BAJO),
+          ("Con alerta", n(r["con_alerta"]), f"{n(r['alertas_sin_venta'])} sin venta · {n(r['alertas_venta_alta'])} venta alta · {n(r['alertas_no_cubre'])} no cubre", C_BAJO),
           ("Se quedan en M", n(r["quedan"]), "Pronóstico cero, lineal, nivel bajo o exclusión", C_EXT)])
 
     t_res, t_pas, t_ale, t_que = st.tabs(["Resumen", f"Pasan a TDF ({n(len(pasan))})", f"Con alerta ({n(len(con_alerta))})",
@@ -195,6 +202,20 @@ def main():
                 grafico("Familias que más pasan a TDF", "Top 10 por número de filas.", _barras(fam, "Familia", "Filas", C_OK))
             else:
                 st.info("Ninguna fila pasa a TDF con los parámetros actuales.")
+        if len(pasan):
+            dv = pd.Series(r["dss_por_valor"]).rename_axis("DSS").reset_index(name="Filas")
+            dv["DSS"] = dv["DSS"].map(lambda k: f"{k} día" + ("" if k == 1 else "s"))
+            dm = pd.Series(r["dss_por_motivo"]).rename_axis("Motivo").reset_index(name="Filas")
+            h1, h2 = st.columns(2)
+            with h1:
+                grafico("DSS sugerido", "Cuántas filas que pasan a TDF llevan cada valor de días de stock de seguridad.",
+                        alt.Chart(dv).mark_bar(cornerRadiusEnd=4, size=20, color=C_ALT).encode(
+                            y=alt.Y("DSS:N", sort=list(dv["DSS"]), title=None),
+                            x=alt.X("Filas:Q", title=None, axis=alt.Axis(format="~s", grid=True)),
+                            tooltip=["DSS", alt.Tooltip("Filas:Q", format=",")]).properties(height=max(120, 26 * len(dv))))
+            with h2:
+                grafico("Por qué ese DSS", "Frecuencia de despacho, o más días porque la venta real es mayor que el pronóstico.",
+                        _barras(dm, "Motivo", "Filas", C_ALT))
         seccion("Estadísticos que más pasan a TDF", "Cuántos locales cambian y cuántos de ellos no tuvieron venta (alerta)")
         if len(pasan):
             top = pasan.groupby(["ESTADISTICO", "DESCRIPCION"]).agg(Locales=("Local", "nunique"), Con_alerta=("ALERTA", lambda s: int((s != "").sum()))
@@ -203,17 +224,17 @@ def main():
             tot_m = res.groupby("ESTADISTICO")["Local"].nunique().rename("En M")
             top = top.merge(tot_m, left_on="ESTADISTICO", right_index=True, how="left")
             st.dataframe(top, hide_index=True, width="stretch", height=min(460, 35 * (len(top) + 1) + 3))
-    cols_pas = ["MOTIVO", "ALERTA", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "EXCLUSION", "Exhi", "Min", "Max",
-                "CONSUMOS ACU", "PROMEDIO PRONOSTICO DIA", "COBERTURA TDF", "UMBRAL TDF"]
+    cols_pas = ["DIAS SS SUGERIDO", "MOTIVO DSS", "ALERTA", "MOTIVO", "DIAS SS ACTUAL", "FREC EFECTIVA", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "EXCLUSION", "Exhi", "Min", "Max",
+                "CONSUMOS ACU", "CONSUMO DIA", "PROMEDIO PRONOSTICO DIA", "VENTA DEL CICLO", "PROY+CUBR (DSS SUGERIDO)", "COBERTURA TDF", "UMBRAL TDF"]
     with t_pas:
         _tabla(pasan, "pas", cols_pas, extra_filtros=[("EXCLUSION", "Exclusión")])
     with t_ale:
         if len(con_alerta):
-            st.markdown(nota_html("Estos estadísticos pasan a TDF porque su pronóstico es normal, pero <b>no tuvieron venta en el mes</b>. "
-                                  "Conviene revisar si están en quiebre, si son nuevos o si el pronóstico está desfasado.", "warn"), unsafe_allow_html=True)
+            st.markdown(nota_html("Estos estadísticos pasan a TDF pero conviene revisarlos: <b>no tuvieron venta en el mes</b>, la <b>venta real supera mucho "
+                                  "al pronóstico</b>, o <b>ni con el DSS máximo</b> se cubre la venta hasta el próximo despacho. Mira la columna ALERTA.", "warn"), unsafe_allow_html=True)
             _tabla(con_alerta, "ale", cols_pas, extra_filtros=[("ESTADISTICO", "Estadístico")])
         else:
-            st.info("Ningún estadístico pasa a TDF sin venta en el mes.")
+            st.info("Ningún estadístico que pasa a TDF tiene alertas.")
     with t_que:
         _tabla(quedan, "que", ["MOTIVO", "CLASE PRONOSTICO", "Local", "DESIGNACION", "ESTADISTICO", "DESCRIPCION", "FAMILIA", "EXCLUSION",
                                "Exhi", "Min", "Max", "COBERTURA TDF", "UMBRAL TDF"], extra_filtros=[("MOTIVO", "Motivo")])

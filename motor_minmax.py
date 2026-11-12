@@ -389,7 +389,7 @@ def leer_consumo_anterior(archivo, col_local=None, col_item=None, col_consumo=No
 # --------------------------------------------------------------------------
 # PROCESO PRINCIPAL
 # --------------------------------------------------------------------------
-def clasificar_pronostico(df_bi: pd.DataFrame, p: "Params | None" = None, cols_pronostico: list | None = None):
+def clasificar_pronostico(df_bi: pd.DataFrame, p: "Params | None" = None, cols_pronostico: list | None = None, max_dss: int = 0):
     """Clasifica cada fila del BI por su pronóstico, con la MISMA regla que usa procesar() para decidir TDF -> Min/Max:
         Cero / Sin pronóstico  -> la suma de los 12 días es 0 (o no hay pronóstico)
         Lineal                 -> pronóstico repetido (ver `_es_lineal`; si el modelo copió la semana se juzga solo la semana 1)
@@ -441,7 +441,9 @@ def clasificar_pronostico(df_bi: pd.DataFrame, p: "Params | None" = None, cols_p
     prom = suma / n_dias
     Vn = np.nan_to_num(V, nan=0.0)
     hor = np.clip(np.round(df["FREC EFECTIVA"].values + df["Dias SS"].values).astype(int), 0, 60)
-    ext = np.tile(prom[:, None], (1, max(int(hor.max()) + 1 if len(hor) else 1, n_dias)))
+    frec_i = df["FREC EFECTIVA"].values.astype(int)
+    ancho = max(int(hor.max()) if len(hor) else 0, (int(frec_i.max()) if len(frec_i) else 0) + int(max_dss), n_dias - 1) + 1
+    ext = np.tile(prom[:, None], (1, ancho))      # más allá del pronóstico del BI se usa el promedio diario
     ext[:, :n_dias] = Vn
     cum = np.cumsum(ext, axis=1)
     idx = np.arange(len(df))
@@ -459,7 +461,8 @@ def clasificar_pronostico(df_bi: pd.DataFrame, p: "Params | None" = None, cols_p
     df["NIVEL BAJO"] = cob < umbral
     df["_CON_SUB"] = con_sub
     df["CONSUMO DIA"] = df["CONSUMOS ACU"].astype(float) / p.dias_transcurridos
-    info = {"dias_de_pronostico": n_dias, "columnas_pronostico_usadas": [str(c) for c in fechas]}
+    # `_cum[:, h]` = pronóstico acumulado de los días 0..h = Proyectado + Cubrimiento con un horizonte de h días (lo usa motor_tdf para sugerir los DSS)
+    info = {"dias_de_pronostico": n_dias, "columnas_pronostico_usadas": [str(c) for c in fechas], "_cum": cum, "_proyectado": ext[:, 0]}
     return df, info
 
 

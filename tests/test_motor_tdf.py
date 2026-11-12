@@ -7,7 +7,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from motor_minmax import Params  # noqa: E402
-from motor_tdf import ParamsTDF, hoja_carga, procesar_m_a_tdf, exportar_excel_tdf  # noqa: E402
+from motor_tdf import ParamsTDF, hoja_carga, procesar_m_a_tdf, exportar_excel_tdf, sugerir_dss  # noqa: E402
 
 FECHAS = [f"{d:02d}/NOV/2026" for d in range(12, 24)]
 NORMAL = [1.2, 0.8, 1.5, 0.9, 1.1, 0.7, 1.3, 0.6, 1.4, 0.95, 1.05, 0.85]
@@ -60,6 +60,27 @@ def main():
     # sin alerta si se desactiva
     res3, r3 = procesar_m_a_tdf(df, Params(dias_transcurridos=11), ParamsTDF(alerta_sin_venta=False))
     assert r3["alertas_sin_venta"] == 0
+    # DSS sugerido: solo para los que pasan; base = frecuencia efectiva
+    assert d.loc[[5, 6, 7, 13], "DIAS SS SUGERIDO"].isna().all() and (d.loc[[5, 6, 7, 13], "MOTIVO DSS"] == "").all()
+    assert (c["DIAS SS SUGERIDO"] == d.loc[[1, 2, 3, 4], "FREC EFECTIVA"].values).all()          # venta baja -> DSS = frecuencia
+    assert set(d.loc[[1, 2, 3, 4], "MOTIVO DSS"]) == {"Frecuencia de despacho"}
+    assert sum(r["dss_por_valor"].values()) == 4 and r["dss_tope"] == 10
+    # venta real muy superior al pronóstico: sube el DSS, avisa y no cambia quién pasa
+    alto = pd.DataFrame([fila(1, NORMAL, "LI", cons=330)])                                        # 30 u/día contra ~1 u/día
+    ra, rs = procesar_m_a_tdf(alto, Params(dias_transcurridos=11), ParamsTDF(dss_tope=10))
+    fr = int(ra.loc[0, "FREC EFECTIVA"])
+    assert ra.loc[0, "DECISION"] == "Pasar a TDF" and ra.loc[0, "DIAS SS SUGERIDO"] > fr
+    assert "Venta real" in ra.loc[0, "ALERTA"] and rs["alertas_venta_alta"] == 1
+    assert "Ni con el DSS máximo" in ra.loc[0, "ALERTA"] and ra.loc[0, "DIAS SS SUGERIDO"] == max(10, fr)   # no alcanza ni con el tope
+    # venta moderada: el DSS sube lo justo para cubrir la venta del ciclo
+    med = pd.DataFrame([fila(1, NORMAL, "LI", cons=33)])                                          # 3 u/día contra ~1 u/día
+    rm, _ = procesar_m_a_tdf(med, Params(dias_transcurridos=11), ParamsTDF(dss_tope=10))
+    fm = int(rm.loc[0, "FREC EFECTIVA"]); dm = int(rm.loc[0, "DIAS SS SUGERIDO"])
+    assert dm > fm and rm.loc[0, "PROY+CUBR (DSS SUGERIDO)"] >= rm.loc[0, "VENTA DEL CICLO"] - 1e-9
+    # y con un día menos de DSS no alcanzaba
+    cum = np.cumsum(np.array([NORMAL + [np.mean(NORMAL)] * 10]), axis=1)
+    dss, mot, env, nc = sugerir_dss([2], cum, [3.0], 10)
+    assert dss[0] == 3 and env[0] >= 6.0 and cum[0, 2 + dss[0] - 1] < 6.0 and not nc[0]
     # Excel
     import io
     import openpyxl

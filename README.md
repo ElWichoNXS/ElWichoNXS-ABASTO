@@ -65,6 +65,12 @@ Un estadístico pasa a TDF si cumple las tres condiciones:
 
 Si pasa a TDF pero no tuvo venta en el mes (con pronóstico normal), cambia igual y queda con una **ALERTA**.
 
+**Días de stock de seguridad (DSS) sugeridos.** En TDF el DSS es obligatorio, así que a cada estadístico que pasa se le sugiere cuántos cargar. Esto **no cambia quién pasa**; el nivel TDF se sigue midiendo con el DSS que trae el BI.
+- Base = frecuencia de despacho efectiva (`FREC EFECTIVA`).
+- Lo que TDF envía es `Proyectado + Cubrimiento + Exhibición (+ Destacado)`. Si `Proyectado + Cubrimiento` no alcanza la venta real hasta el próximo despacho (`CONSUMO DIA × frecuencia`), se suben los DSS hasta que alcance, con un máximo configurable (10 por defecto).
+- Columnas nuevas: `DIAS SS SUGERIDO`, `MOTIVO DSS` (frecuencia / frecuencia + consumo alto / no cubre ni con el máximo), `DIAS SS ACTUAL`, `VENTA DEL CICLO`, `PROY+CUBR (DSS SUGERIDO)`, `VENTA REAL / PRONOSTICO`. En `CARGA TDF` va `DIAS SS SUGERIDO`.
+- Alertas (solo informan): sin venta en el mes; venta real ≥ 3 veces el pronóstico (y ≥ 2 u/día); ni con el DSS máximo se cubre la venta del ciclo.
+
 El Excel trae: **Resumen**, **PASAN A TDF** (con motivo y alerta), **CARGA TDF** (Local, estadístico, método actual M y nuevo TDF, alerta; la columna ALERTA se puede borrar antes de cargar) y **SE QUEDAN EN M** (con el motivo: exclusión, pronóstico cero, sin pronóstico, lineal o nivel TDF bajo).
 
 Pruebas con datos inventados: `python tests/test_motor_tdf.py`.
